@@ -1,0 +1,34 @@
+@echo off
+setlocal
+set "ASTROHYBRID_VR=1"
+if not defined KYTY_NATIVE_IMAGE_POOL_MB set "KYTY_NATIVE_IMAGE_POOL_MB=512"
+if not defined KYTY_VRAM_STATS set "KYTY_VRAM_STATS=1"
+if not defined KYTY_VRAM_STATS_SECONDS set "KYTY_VRAM_STATS_SECONDS=15"
+if not defined KYTY_VRAM_STATS_FILE set "KYTY_VRAM_STATS_FILE=%~dp0Logs\vr-memory.log"
+set "KYTY_OPENXR=1"
+set "KYTY_FLAT_CAMERA_VR=1"
+set "KYTY_FLAT_STEREO=1"
+set "KYTY_FLAT_STEREO_SAME_FRAME=1"
+set "KYTY_FLAT_STEREO_MIRROR=1"
+if not defined KYTY_VR_OUTPUT_PIXELS set "KYTY_VR_OUTPUT_PIXELS=1"
+if not defined KYTY_VR_FOV_COVERAGE set "KYTY_VR_FOV_COVERAGE=1.35"
+set "KYTY_DRAW_PREP=parallel"
+set "KYTY_STEREO_PREP_BINDINGS=1"
+set "KYTY_STEREO_REGISTER_BORROW=1"
+set "KYTY_STEREO_SHARED_PLAN=1"
+set "KYTY_CP_RECORDER=0"
+set "KYTY_PIPELINE_SKIP=0"
+set "KYTY_HOST_INPUT_MIN_PRESS_MS=120"
+set "KYTY_ASTRO_INTERNAL_PIXELS=0"
+set "KYTY_ASTRO_EXPANDED_MEMORY=0"
+set "ASTROHYBRID_DLSS=0"
+set "ASTROHYBRID_DLSSG=0"
+set "ASTROHYBRID_GAME_SPEED=1"
+set "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1"
+if not exist "%~dp0Build\RunHybrid\AstroHybridVR.ready" (
+  echo The AstroHybrid VR renderer has not been installed.
+  exit /b 1
+)
+call "%~dp0Run-AstroHybrid.bat" %*
+exit /b %ERRORLEVEL%
+

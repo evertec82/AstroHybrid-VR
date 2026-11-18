@@ -1,0 +1,12 @@
+{
+  "clean_install": "passed",
+  "patched_executable_sha256": "2fd54d2e6b43640c5b29af15ef66a3ea16442c2fc9562f97c5e63539623e32e1",
+  "same_as_tested_local_executable": true,
+  "portable_manifest_paths": "passed",
+  "launcher_apply": "passed",
+  "public_default_width": 3520,
+  "overlay_default": false,
+  "unsupported_build_rejected": true,
+  "game_files_and_saves_excluded": true,
+  "zip_integrity": "passed"
+}
