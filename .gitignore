@@ -1,0 +1,15 @@
+/Build/
+/VR-support/
+/Logs/
+/reports/
+/VR-backup-*/
+/vr-launcher-settings.json
+*.exe
+*.dll
+*.prx
+*.pkg
+*.zip
+*.7z
+*.registry.json
+*.needed.json
+*.tmp
