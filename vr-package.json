@@ -8,6 +8,18 @@
     "source_sha256": "5f52defd58fbd476091a0ea02e07835fdc32ce982d7c5176f26bbdf461141949",
     "target_name": "AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard",
     "target_sha256": "2fd54d2e6b43640c5b29af15ef66a3ea16442c2fc9562f97c5e63539623e32e1",
+    "conversions": [
+      {
+        "variant": "AstroHybrid 1.2.1 AMD",
+        "source_sha256": "367854fe30f577621b6a159dcc8c095ebc7d872247cbc661b9c3928f217f404c",
+        "target_sha256": "e2e1cfcfe735755ad7c9dad1c46c4056e3015a03b6464ab69a6e3ac22ad31ed6"
+      },
+      {
+        "variant": "AstroHybrid 1.2.1 Intel",
+        "source_sha256": "0b3633a1e742dd3ac00623912766c57c7da5e94e55dd4d91d1ec511d86bd60af",
+        "target_sha256": "b482f0d23c3baac67194da736cc11f4bba16df3dd8ef83743404a15c8557265d"
+      }
+    ],
     "patches": [
       {
         "offset": 121592501,
@@ -935,7 +947,7 @@
     },
     {
       "path": "Install-VR.ps1",
-      "sha256": "9943374f3fd17358bf14613eb105035d53b03f0cc663cbff177a2a30bd84ce87"
+      "sha256": "924f628fd5b6e8c22fe7103774ad6275ff5018152901de4b26c8f0a2ae5be71a"
     },
     {
       "path": "LICENSE",
@@ -951,7 +963,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "2ce5ced21be957f48eeb6f34c98fd645c8ec653b044343b4de2728b0e6f02e8c"
+      "sha256": "9f79ec6634c2855a4db4ce1badd317f322d4bbc2e50c63ea73b67f84d0af5b90"
     },
     {
       "path": "vr-launcher-settings.json",

@@ -10,7 +10,7 @@ Both eyes render from the **same game frame**. Features include head tracking, h
 
 - Windows 10/11 x64, a Vulkan-capable GPU, and the Microsoft Visual C++ 2015–2022 x64 runtime.
 - A PC VR headset and working OpenXR runtime. SteamVR has been tested. Connect the headset and keep the PC VR session awake before launching.
-- Your own decrypted **PPSA21567, version 01.019.000** Astro Bot dump. This first release checks the converted executable's SHA-256 and refuses other builds.
+- Your own decrypted **PPSA21567, version 01.019.000** Astro Bot dump. The corrected v0.1.0 installer recognizes both AMD and Intel conversions from AstroHybrid 1.2.1, as well as the original supported conversion. It verifies the full executable before and after patching.
 - [AstroHybrid 1.2.1](https://github.com/imnotsharingmyname/pcportastrobot/releases/tag/v1.2.1), installed and working in desktop mode.
 - A gamepad for game controls. Head tracking does not turn this game into a motion-controller game.
 - NVIDIA optical-flow frame generation requires a compatible NVIDIA GPU and driver. This mod was developed on an RTX 5090 with 32 GB VRAM; comparable performance on other GPUs has not been established. Start at the lower presets. The 5184 and 6000 presets can consume substantial VRAM.

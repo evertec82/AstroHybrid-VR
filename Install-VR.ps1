@@ -22,8 +22,22 @@ $base=Join-Path $run ($manifest.game.base_name+'.exe')
 if(!(Test-Path -LiteralPath $base)) {
     throw 'First complete setup using AstroHybrid 1.2.1 and your own decrypted PPSA21567 v01.019.000 dump. Extract this mod ZIP into that AstroHybrid folder, then run Install VR.bat.'
 }
-if((Hash-File $base) -ne $manifest.game.source_sha256) {
-    throw 'This converted executable is not the supported build. VR installation stopped without patching it. Supported: PPSA21567 v01.019.000, AstroHybrid NonRT-SoftAssert variant. See README.md.'
+$sourceHash=Hash-File $base
+$targetHash=$manifest.game.target_sha256
+if($sourceHash -ne $manifest.game.source_sha256) {
+    $match=@($manifest.game.conversions | Where-Object { $_.source_sha256 -eq $sourceHash })
+    if($match.Count -ne 1) {
+        $details='Setup metadata unavailable.'
+        $infoPath=Join-Path $run 'astrohybrid-game.json'
+        if(Test-Path -LiteralPath $infoPath) {
+            try {
+                $info=Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+                $details="TitleId=$($info.TitleId) Version=$($info.Version) IntelConversion=$($info.IntelConversion)"
+            } catch {}
+        }
+        throw "Unrecognized AstroHybrid conversion. $details. Source SHA-256=$sourceHash. Please include this line when reporting the issue. Installation stopped before patching."
+    }
+    $targetHash=$match[0].target_sha256
 }
 $sidecars=@(Get-ChildItem -LiteralPath $run -File | Where-Object { $_.Name.StartsWith($manifest.game.base_name+'.',[StringComparison]::Ordinal) -and $_.Name.EndsWith('.json') })
 if($sidecars.Count -ne 6){throw 'The six loader sidecar files are missing. Run AstroHybrid setup again before installing VR.'}
@@ -56,7 +70,7 @@ try {
             $stream.Write($replacement,0,$replacement.Length)
         }
     } finally {$stream.Dispose()}
-    if((Hash-File $temporary) -ne $manifest.game.target_sha256){throw 'Patched executable verification failed.'}
+    if((Hash-File $temporary) -ne $targetHash){throw 'Patched executable verification failed.'}
     Move-Item -LiteralPath $temporary -Destination $candidate -Force
 } finally {if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
 foreach($sidecar in $sidecars) {
