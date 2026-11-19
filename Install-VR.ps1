@@ -23,7 +23,7 @@ if(!(Test-Path -LiteralPath $base)) {
     throw 'First complete setup using AstroHybrid 1.2.1 and your own decrypted PPSA21567 v01.019.000 dump. Extract this mod ZIP into that AstroHybrid folder, then run Install VR.bat.'
 }
 $sourceHash=Hash-File $base
-$targetHash=$manifest.game.target_sha256
+$conversion=$manifest.game
 if($sourceHash -ne $manifest.game.source_sha256) {
     $match=@($manifest.game.conversions | Where-Object { $_.source_sha256 -eq $sourceHash })
     if($match.Count -ne 1) {
@@ -35,9 +35,9 @@ if($sourceHash -ne $manifest.game.source_sha256) {
                 $details="TitleId=$($info.TitleId) Version=$($info.Version) IntelConversion=$($info.IntelConversion)"
             } catch {}
         }
-        throw "Unrecognized AstroHybrid conversion. $details. Source SHA-256=$sourceHash. Please include this line when reporting the issue. Installation stopped before patching."
+        throw "Unrecognized AstroHybrid conversion. $details. Source SHA-256=$sourceHash. Run Check Conversion.bat and include AstroHybrid-conversion-report.json when reporting the issue. Installation stopped before patching."
     }
-    $targetHash=$match[0].target_sha256
+    $conversion=$match[0]
 }
 $sidecars=@(Get-ChildItem -LiteralPath $run -File | Where-Object { $_.Name.StartsWith($manifest.game.base_name+'.',[StringComparison]::Ordinal) -and $_.Name.EndsWith('.json') })
 if($sidecars.Count -ne 6){throw 'The six loader sidecar files are missing. Run AstroHybrid setup again before installing VR.'}
@@ -59,24 +59,32 @@ try {
 & (Join-Path $PSScriptRoot 'Install-HudLayout.ps1') -RunDirectory $run -ValidateOnly
 if($ValidateOnly){'Package, executable signatures, HUD layouts and loader files verified.';exit 0}
 
-$candidate=Join-Path $run ($manifest.game.target_name+'.exe')
-$temporary=$candidate+'.vr-install.tmp'
-try {
-    [IO.File]::Copy($base,$temporary,$true)
-    $stream=[IO.File]::Open($temporary,[IO.FileMode]::Open,[IO.FileAccess]::Write)
+foreach ($targetName in @($manifest.game.target_name, $manifest.game.dlss_target_name)) {
+    $patches=$manifest.game.patches
+    $targetHash=$conversion.target_sha256
+    if ($targetName -eq $manifest.game.dlss_target_name) {
+        $patches=@($patches | Where-Object { $_.offset -in $manifest.game.dlss_patch_offsets })
+        $targetHash=$conversion.dlss_sha256
+    }
+    $candidate=Join-Path $run ($targetName+'.exe')
+    $temporary=$candidate+'.vr-install.tmp'
     try {
-        foreach($patch in $manifest.game.patches) {
-            $replacement=Hex-Bytes $patch.after
-            $stream.Position=[long]$patch.offset
-            $stream.Write($replacement,0,$replacement.Length)
-        }
-    } finally {$stream.Dispose()}
-    if((Hash-File $temporary) -ne $targetHash){throw 'Patched executable verification failed.'}
-    Move-Item -LiteralPath $temporary -Destination $candidate -Force
-} finally {if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
-foreach($sidecar in $sidecars) {
-    $name=$manifest.game.target_name+$sidecar.Name.Substring($manifest.game.base_name.Length)
-    Copy-Item -LiteralPath $sidecar.FullName -Destination (Join-Path $run $name) -Force
+        [IO.File]::Copy($base,$temporary,$true)
+        $stream=[IO.File]::Open($temporary,[IO.FileMode]::Open,[IO.FileAccess]::Write)
+        try {
+            foreach($patch in $patches) {
+                $replacement=Hex-Bytes $patch.after
+                $stream.Position=[long]$patch.offset
+                $stream.Write($replacement,0,$replacement.Length)
+            }
+        } finally {$stream.Dispose()}
+        if((Hash-File $temporary) -ne $targetHash){throw 'Patched executable verification failed.'}
+        Move-Item -LiteralPath $temporary -Destination $candidate -Force
+    } finally {if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
+    foreach($sidecar in $sidecars) {
+        $name=$targetName+$sidecar.Name.Substring($manifest.game.base_name.Length)
+        Copy-Item -LiteralPath $sidecar.FullName -Destination (Join-Path $run $name) -Force
+    }
 }
 $backup=Join-Path $root ('VR-backup-'+[DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Path $backup -Force | Out-Null

@@ -1,5 +1,5 @@
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "base_runtime": "AstroHybrid 1.2.1",
   "game": {
     "title_id": "PPSA21567",
@@ -12,12 +12,14 @@
       {
         "variant": "AstroHybrid 1.2.1 AMD",
         "source_sha256": "367854fe30f577621b6a159dcc8c095ebc7d872247cbc661b9c3928f217f404c",
-        "target_sha256": "fa2f8d212ac04a48a04372553e0c2b8fcd56b9b195569d9022426e3f5b779907"
+        "target_sha256": "fa2f8d212ac04a48a04372553e0c2b8fcd56b9b195569d9022426e3f5b779907",
+        "dlss_sha256": "2aab2abdfeaebe5f8ae272769d75185d67b521076e767af77b391c2798aab9bc"
       },
       {
         "variant": "AstroHybrid 1.2.1 Intel",
         "source_sha256": "0b3633a1e742dd3ac00623912766c57c7da5e94e55dd4d91d1ec511d86bd60af",
-        "target_sha256": "f0d6c014fa20b069cbdf4aeae16d771e3400e1ca055c534cfee686a123817c9a"
+        "target_sha256": "f0d6c014fa20b069cbdf4aeae16d771e3400e1ca055c534cfee686a123817c9a",
+        "dlss_sha256": "ea3885287bb41e820649d11da4a31d53a65131f5e749a113e217c9a03b6e0719"
       }
     ],
     "patches": [
@@ -91,16 +93,23 @@
         "before": "c5f8288da0f9ffffc785c0fbffff01000000c5f8118d40faffffc5f8118d60faffffc5f8118d80faffffc5f8118d50faffffc5f8118d70faffffc5f8299570f9ffffc5f8118d90faffffeb236666666666662e0f1f840000000000",
         "after": "c5f8104e40c5f0c24e5003c5f850c1a8070f852f030000c5f8288da0f9ffffc785c0fbffff01000000488d8540faffffc5f81108c5f8114810c5f8114820c5f8114830c5f8114840c5f8114850c5f8299570f9ffffeb1890909090"
       }
-    ]
+    ],
+    "dlss_target_name": "AstroBot-NonRT-SoftAssert-DLSS-PhysicsGuard",
+    "dlss_patch_offsets": [
+      8902987,
+      8893441,
+      11991093
+    ],
+    "dlss_sha256": "a2dec4213b4f6ce5799191a11502edd23956df42b7baf74084b9e2ead64b8fe7"
   },
   "payload": [
     {
       "path": "AstroHybrid VR Launcher.ps1",
-      "sha256": "267bb78e43c20d074581937dbff8eba7bd0529f15131b3649b60b1f38ef871f1"
+      "sha256": "a1f88af162db0edd30b4cbecb40fdf21644effba617160eef71c7ec6cdd24a60"
     },
     {
       "path": "BUILDING.md",
-      "sha256": "ce90a0ffb47f2d293533405203a2e1a38e7dd3760911f8ca349d41e07d69b0e0"
+      "sha256": "f65172e223acdcb869fd090cab33244a87171c8374e0de842c0172f6d9c8a4ca"
     },
     {
       "path": "Build/FrameGeneration/BUILD_PROVENANCE.json",
@@ -808,11 +817,15 @@
     },
     {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.diagnostics.dll",
-      "sha256": "96b415bbfb544c4d726cb8242984f774d5f72c2dccce44cc67137b2de8b30ad1"
+      "sha256": "0b364fddc94b5349d2fb5943733d7c3afa6c7b55d886b6989a8c0a745b0c237e"
     },
     {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.dll",
-      "sha256": "d491fe76dc4f614367208caddb33307588374273c5fb58c78e9fc411e79bf793"
+      "sha256": "d0f641ce5d280aa1959ef524cfe2111718e2da660fb863a76a4f2686edcb9ea3"
+    },
+    {
+      "path": "Build/HeadsetProjectionPreview/kyty_gpu.dlss.dll",
+      "sha256": "10a0bd004a86e11e396d1d42456daa51d28be4c699c8b961fdc6d775a20f1e1d"
     },
     {
       "path": "Build/RunHybrid/assets/cursors/drawing.png",
@@ -951,6 +964,14 @@
       "sha256": "99f45c458ed7895c61d2fe18c3408005ae3832749ba3afa7e3361ddb879e01c7"
     },
     {
+      "path": "Check Conversion.bat",
+      "sha256": "97ca33b697747a7bd75d0c66aa6d4e6d1b652253122c1447f87ecd09e2728ee1"
+    },
+    {
+      "path": "Check-Conversion.ps1",
+      "sha256": "d7f96f1a282cc7b671f2e8715e1f8f185118a8a47926ea333ed941f68ae9fd4e"
+    },
+    {
       "path": "Install VR.bat",
       "sha256": "3baa9a2c5caf6a0cffb4d84329295402affa73ee8c7338f6788128a77cd68ef0"
     },
@@ -960,7 +981,7 @@
     },
     {
       "path": "Install-VR.ps1",
-      "sha256": "0d54d891cfa352d0e00467ae063b9480fd4d94a80b3a9b7b58a58fa0ac899686"
+      "sha256": "38f35b01fed37e4749d8d06ba81d55b4309778a7e2a2de404f7c84c2af732597"
     },
     {
       "path": "LICENSE",
@@ -972,11 +993,11 @@
     },
     {
       "path": "Play AstroHybrid VR.bat",
-      "sha256": "f97013c98e23559a81d16898ee2c4b2e2ddebab6798f65d3f1222c8d127547a0"
+      "sha256": "4e8e043ea03c8ae0e6dbbe416896e25fe82e305fe42a53112ad91d919d7435c6"
     },
     {
       "path": "README.md",
-      "sha256": "2575d4cd0c30511874010c09a7fecacad772603ee2fb4fb230c7f2e774ade869"
+      "sha256": "93199425f50f7e1abcba049b6eb96922897b3d513154ced58b0bdb6a5df876d6"
     },
     {
       "path": "VR-support/libSceVideoOut.prx",

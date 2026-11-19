@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index cca6f074..716e76f9 100644
+index cca6f074..e47af71f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -754,6 +754,12 @@ add_executable(game_patch_filter_tests EXCLUDE_FROM_ALL
@@ -44,7 +44,21 @@ index cca6f074..716e76f9 100644
  configure_macos_guest_address_space(kyty_emulator)
  
  option(KYTY_EMULATOR_IPO "Enable release interprocedural optimization for the emulator target" OFF)
-@@ -2614,7 +2633,7 @@ set(KYTY_EMULATOR_PDB_LINK_PATH "${CMAKE_CURRENT_BINARY_DIR}/kyty_emulator.pdb")
+@@ -2590,9 +2609,10 @@ target_link_libraries(kyty_emulator ${CMAKE_DL_LIBS})
+ # folder (include/, lib/Windows_x86_64/nvsdk_ngx_d.lib) to build it in; empty: not built in.
+ set(KYTY_NGX_SDK_DIR "" CACHE PATH "NVIDIA NGX SDK folder (DLSS); empty to build without it")
+ if(KYTY_NGX_SDK_DIR)
+-	target_compile_definitions(kyty_emulator PRIVATE KYTY_NGX=1)
+-	target_include_directories(kyty_emulator PRIVATE "${KYTY_NGX_SDK_DIR}/include")
+-	target_link_libraries(kyty_emulator "${KYTY_NGX_SDK_DIR}/lib/Windows_x86_64/nvsdk_ngx_d.lib")
++	set_property(SOURCE src/graphics/host_gpu/renderer/dlss.cpp APPEND PROPERTY COMPILE_DEFINITIONS KYTY_NGX=1)
++	set_property(SOURCE src/graphics/host_gpu/renderer/dlss.cpp APPEND PROPERTY INCLUDE_DIRECTORIES "${KYTY_NGX_SDK_DIR}/include")
++	find_library(KYTY_NGX_LIB NAMES nvsdk_ngx_d PATHS "${KYTY_NGX_SDK_DIR}/lib/Windows_x86_64/x64" "${KYTY_NGX_SDK_DIR}/lib/Windows_x86_64" NO_DEFAULT_PATH NO_CACHE REQUIRED)
++	target_link_libraries(kyty_emulator "${KYTY_NGX_LIB}")
+ endif()
+ # AstroHybrid: DLSS Frame Generation through Streamline (renderer/frameGen.cpp), headers only;
+ # sl.interposer.dll is loaded at run time. Empty: not built in.
+@@ -2614,7 +2634,7 @@ set(KYTY_EMULATOR_PDB_LINK_PATH "${CMAKE_CURRENT_BINARY_DIR}/kyty_emulator.pdb")
  
  if(KYTY_CLANG_CL)
  	target_link_options(kyty_emulator PRIVATE
@@ -265,7 +279,7 @@ index ed299289..2208adbf 100644
  	};
  	std::unique_ptr<SparseState> sparse;
 diff --git a/src/graphics/host_gpu/memoryTracker.h b/src/graphics/host_gpu/memoryTracker.h
-index 05910a66..a0d589f5 100644
+index 05910a66..559d5d3d 100644
 --- a/src/graphics/host_gpu/memoryTracker.h
 +++ b/src/graphics/host_gpu/memoryTracker.h
 @@ -139,11 +139,20 @@ public:
@@ -309,6 +323,26 @@ index 05910a66..a0d589f5 100644
  				if (write_fault) {
  					fault = manager->MarkWriteFault(manager->GetCpuAddr() + offset, bytes, policy,
  					                                Frame(), m_hot_count, on_ahead);
+@@ -378,9 +390,17 @@ private:
+ 		if (size == 0 || vaddr >= TRACKER_ADDRESS_SIZE || size > TRACKER_ADDRESS_SIZE - vaddr) {
+ 			return 0;
+ 		}
+-		uint64_t   sum  = 0;
++		const auto first = vaddr / TRACKER_REGION_SIZE;
+ 		const auto last = (vaddr + size - 1) / TRACKER_REGION_SIZE;
+-		for (auto index = vaddr / TRACKER_REGION_SIZE; index <= last; index++) {
++		const auto* head = m_regions[first].load(std::memory_order_acquire);
++		if (head == nullptr) {
++			return 0;
++		}
++		uint64_t sum = value(*head);
++		if (first == last) [[likely]] {
++			return sum;
++		}
++		for (auto index = first + 1; index <= last; index++) {
+ 			const auto* manager = m_regions[index].load(std::memory_order_acquire);
+ 			if (manager == nullptr) {
+ 				return 0;
 diff --git a/src/graphics/host_gpu/pageManager.cpp b/src/graphics/host_gpu/pageManager.cpp
 index f43c4c91..d015e189 100644
 --- a/src/graphics/host_gpu/pageManager.cpp
@@ -362,7 +396,7 @@ index 137906f1..196eb6ce 100644
  
  } // namespace Libs::Graphics
 diff --git a/src/graphics/host_gpu/renderer/cache/bufferCache.cpp b/src/graphics/host_gpu/renderer/cache/bufferCache.cpp
-index 13dabc7b..f3536df3 100644
+index 13dabc7b..34c956a2 100644
 --- a/src/graphics/host_gpu/renderer/cache/bufferCache.cpp
 +++ b/src/graphics/host_gpu/renderer/cache/bufferCache.cpp
 @@ -1,4 +1,7 @@
@@ -441,7 +475,33 @@ index 13dabc7b..f3536df3 100644
  	std::optional<ReadFaultDiagScope> diag;
  	if (ReadFaultDiag::Covers(vaddr, size) && !is_write && !GuestGpu::IsGpuThread()) {
  		diag.emplace(vaddr, m_scheduler.GetMasterSemaphore());
-@@ -3691,6 +3730,54 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t
+@@ -2997,6 +3036,25 @@ bool BufferCache::TakeEagerFlushRequest(bool in_rendering) {
+ 	return true;
+ }
+ 
++BufferId BufferCache::FindDescriptorBuffer(uint64_t address, uint64_t size, bool verify) {
++	// Only memoize ownership. Upload, dirty tracking and descriptor binding still
++	// run for every access. Register and Unregister both advance the structure epoch.
++	const auto epoch = m_bda_structure_epoch.load(std::memory_order_acquire);
++	auto& slot = m_descriptor_owners[((address >> 4) ^ (address >> 12) ^ (address >> 20)) & 255];
++	if (epoch != UINT64_MAX && slot.structure == epoch && slot.address == address && slot.size == size) {
++		if (verify) {
++			const auto serial = FindBuffer(address, size);
++			EXIT_IF(serial != slot.id);
++		}
++		return slot.id;
++	}
++	const auto id = FindBuffer(address, size);
++	if (id && epoch == m_bda_structure_epoch.load(std::memory_order_acquire)) {
++		slot = {address, size, epoch, id};
++	}
++	return id;
++}
++
+ BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
+ 	if (vaddr == 0) {
+ 		return NULL_BUFFER_ID;
+@@ -3691,6 +3749,54 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t
  	if (command.IsInvalid() || !GuestRange {vaddr, size}.Valid()) {
  		EXIT("BufferCache: buffer request requires a recording command buffer\n");
  	}
@@ -496,7 +556,7 @@ index 13dabc7b..f3536df3 100644
  	if (!is_written && !is_texel_buffer && m_binding_memo != nullptr && size < BindingMemoMaxSize &&
  	    GuestGpu::IsGpuThread()) {
  		return ObtainReadBinding(vaddr, size, id);
-@@ -3909,10 +3996,11 @@ void BufferCache::PrintWrittenEpochSummary() {
+@@ -3909,10 +4015,11 @@ void BufferCache::PrintWrittenEpochSummary() {
  	totals.printed_ns = now;
  }
  
@@ -512,7 +572,7 @@ index 13dabc7b..f3536df3 100644
  	const auto* slot =
  	    &m_binding_memo[static_cast<size_t>(BindingMemoHash(vaddr, size) >> m_binding_memo_shift)];
  #if defined(__clang__) || defined(__GNUC__)
-@@ -6133,6 +6221,9 @@ void BufferCache::SettleBdaWrittenRange(uint64_t vaddr, uint64_t size, uint64_t
+@@ -6133,6 +6240,9 @@ void BufferCache::SettleBdaWrittenRange(uint64_t vaddr, uint64_t size, uint64_t
  
  uint32_t BufferCache::ApplyBdaStoreLog(std::span<const FaultManager::BdaStore> stores,
                                         uint64_t shader_hash) {
@@ -523,10 +583,18 @@ index 13dabc7b..f3536df3 100644
  	RangeSet dwords;
  	for (const auto& store: stores) {
 diff --git a/src/graphics/host_gpu/renderer/cache/bufferCache.h b/src/graphics/host_gpu/renderer/cache/bufferCache.h
-index 6c2192a7..2b03867b 100644
+index 6c2192a7..7da98fb1 100644
 --- a/src/graphics/host_gpu/renderer/cache/bufferCache.h
 +++ b/src/graphics/host_gpu/renderer/cache/bufferCache.h
-@@ -165,8 +165,9 @@ public:
+@@ -153,6 +153,7 @@ public:
+ 	[[nodiscard]] bool TakeEagerFlushRequest(bool in_rendering);
+ 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
+ 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
++	[[nodiscard]] BufferId FindDescriptorBuffer(uint64_t address, uint64_t size, bool verify);
+ 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBuffer(uint64_t vaddr, uint64_t size,
+ 	                                                        bool     is_written,
+ 	                                                        bool     is_texel_buffer = false,
+@@ -165,8 +166,9 @@ public:
  	// changes: every key, signature, epoch and guard check of the lookup still runs.
  	// KYTY_CP_BINDING_BATCH_PREFETCH=find: the hints are issued earlier, by RenderExecutor::
  	// FindBuffers for each read binding it discovers (before the stages' image work), instead of a
@@ -538,6 +606,18 @@ index 6c2192a7..2b03867b 100644
  	// A writable binding whose shader can only write `written` (sub-ranges of [vaddr, vaddr +
  	// size), e.g. from a write-range proof): the whole range is synchronized as for any binding,
  	// but only `written` becomes GPU-owned (dirty, protected, write-ticked).
+@@ -728,6 +730,11 @@ private:
+ 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
+ 	BufferMap                                         m_buffers;
+ 	PageTable                                         m_page_table;
++	struct DescriptorOwner {
++		uint64_t address = 0, size = 0, structure = 0;
++		BufferId id {};
++	};
++	std::array<DescriptorOwner, 256> m_descriptor_owners {};
+ 	RangeSet                                          m_gpu_modified_ranges;
+ 	uint64_t                                          m_unregister_epoch = 0;
+ 	struct KnownFillRange {
 diff --git a/src/graphics/host_gpu/renderer/cache/textureCache.cpp b/src/graphics/host_gpu/renderer/cache/textureCache.cpp
 index aa95affc..4371e373 100644
 --- a/src/graphics/host_gpu/renderer/cache/textureCache.cpp
@@ -652,7 +732,7 @@ index cbc17076..67490937 100644
  	m_submitted.store(value, std::memory_order_release);
  	m_submitted.notify_all();
 diff --git a/src/graphics/host_gpu/renderer/commandRecorder.cpp b/src/graphics/host_gpu/renderer/commandRecorder.cpp
-index a441c6b8..475e7c71 100644
+index a441c6b8..4fc452a1 100644
 --- a/src/graphics/host_gpu/renderer/commandRecorder.cpp
 +++ b/src/graphics/host_gpu/renderer/commandRecorder.cpp
 @@ -583,6 +583,7 @@ struct CommandRecorder::NativeExecutor {
@@ -663,7 +743,18 @@ index a441c6b8..475e7c71 100644
  	void writeBufferMarkerAMD(vk::PipelineStageFlagBits stage, vk::Buffer buffer, vk::DeviceSize offset,
  	                          uint32_t marker) {
  		command.writeBufferMarkerAMD(stage, buffer, offset, marker);
-@@ -990,6 +991,7 @@ void CommandRecorder::InstallVerifyHooks() {
+@@ -605,6 +606,10 @@ CommandStream::Encoder::Options MakeOptions(CommandRecorder::Mode mode, void* se
+ 	options.all_sites      = GpuOpProfiler::CaptureEnabled();
+ 	options.barrier_sites  = GpuOpProfiler::Enabled();
+ 	options.current_site   = &CurrentSites;
++	if (mode == CommandRecorder::Mode::Thread) {
++		options.draw_wake_interval = std::max(1u, static_cast<uint32_t>(
++		    EnvUnsigned("KYTY_CP_RECORDER_DRAW_WAKE_INTERVAL", 1, 64)));
++	}
+ 	options.policy.spin_ns = EnvUnsigned("KYTY_CP_RECORDER_SPIN_US", 30, 1000000) * 1000u;
+ 	if (mode == CommandRecorder::Mode::Inline) {
+ 		options.after_commit         = after_commit;
+@@ -990,6 +995,7 @@ void CommandRecorder::InstallVerifyHooks() {
  		auto& d = VULKAN_HPP_DEFAULT_DISPATCHER;
  #define KYTY_RECORDER_HOOK(member) InstallHook<__COUNTER__>(d.member, #member)
  		KYTY_RECORDER_HOOK(vkBeginCommandBuffer);
@@ -671,8 +762,65 @@ index a441c6b8..475e7c71 100644
  		KYTY_RECORDER_HOOK(vkEndCommandBuffer);
  		KYTY_RECORDER_HOOK(vkCmdBeginRendering);
  		KYTY_RECORDER_HOOK(vkCmdEndRendering);
+diff --git a/src/graphics/host_gpu/renderer/commandScheduler.cpp b/src/graphics/host_gpu/renderer/commandScheduler.cpp
+index f86d3b5c..3000e115 100644
+--- a/src/graphics/host_gpu/renderer/commandScheduler.cpp
++++ b/src/graphics/host_gpu/renderer/commandScheduler.cpp
+@@ -1,4 +1,5 @@
+ #include "graphics/host_gpu/renderer/commandScheduler.h"
++#include "graphics/host_gpu/renderer/renderContext.h"
+ 
+ #include "common/assert.h"
+ #include "common/cpuPlacement.h"
+@@ -119,9 +120,21 @@ bool CommandScheduler::InDeferredOperation() noexcept {
+ 	return g_deferred_callback_scheduler != nullptr;
+ }
+ 
++// Each eye owns a scheduler. Allow the private eye to encode native commands on
++// its recorder while the canonical guest scheduler keeps its normal submission order.
++static CommandRecorder::Mode RecorderModeForContext(RenderContext& context, CommandScheduler::Role role) {
++	if (role != CommandScheduler::Role::Guest) return CommandRecorder::Mode::Off;
++	static const bool secondary_only = [] {
++		const auto* mode = std::getenv("KYTY_CP_RECORDER_SECONDARY_ONLY");
++		return mode != nullptr && std::strcmp(mode, "1") == 0;
++	}();
++	if (secondary_only && !context.IsStereoEyeContext()) return CommandRecorder::Mode::Off;
++	return CommandRecorder::ConfiguredMode();
++}
++
+ CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics, Role role)
+     : m_master(graphics,
+-               role == Role::Guest && CommandRecorder::ConfiguredMode() != CommandRecorder::Mode::Off),
++               RecorderModeForContext(context, role) != CommandRecorder::Mode::Off),
+       m_context(context), m_graphics(graphics),
+       m_command_pool(graphics, m_master), m_command(*this),
+       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {
+@@ -138,8 +151,7 @@ CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graph
+ 		}
+ 	}
+ 	m_gpu_ops = role == Role::Guest && GpuOpProfiler::Enabled();
+-	if (const auto mode = CommandRecorder::ConfiguredMode();
+-	    role == Role::Guest && mode != CommandRecorder::Mode::Off) {
++	if (const auto mode = RecorderModeForContext(context, role); mode != CommandRecorder::Mode::Off) {
+ 		m_recorder = std::make_unique<CommandRecorder>(graphics, m_master, m_gpu_timing.get(),
+ 		                                               m_gpu_ops, mode);
+ 		m_command.m_recorder = m_recorder.get();
+@@ -745,6 +757,13 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit, bool force_completion) {
+ 			m_preserve_current_completion = false;
+ 		}
+ 		m_recorder->Submit(packet);
++		// Keep draw encoding parallel inside the buffer, then match the direct path's
++		// host submission boundary before the guest can begin another command buffer.
++		static const bool wait_for_recording = [] {
++			const auto* setting = std::getenv("KYTY_CP_RECORDER_WAIT_SUBMIT");
++			return setting != nullptr && std::strcmp(setting, "1") == 0;
++		}();
++		if (wait_for_recording) WaitRecorded(packet.tick);
+ 		m_command.m_buffer = nullptr;
+ 		return packet.tick;
+ 	}
 diff --git a/src/graphics/host_gpu/renderer/commandStream.cpp b/src/graphics/host_gpu/renderer/commandStream.cpp
-index a92aa20d..d5e583cb 100644
+index a92aa20d..c7e35936 100644
 --- a/src/graphics/host_gpu/renderer/commandStream.cpp
 +++ b/src/graphics/host_gpu/renderer/commandStream.cpp
 @@ -236,6 +236,7 @@ const char* OpName(Op op) noexcept {
@@ -683,7 +831,27 @@ index a92aa20d..d5e583cb 100644
  	};
  	static_assert(std::size(names) == static_cast<size_t>(Op::Count));
  	const auto index = static_cast<size_t>(op);
-@@ -1397,6 +1398,13 @@ void Encoder::hostCopy(void* destination, uint64_t source, uint64_t size) {
+@@ -861,7 +862,18 @@ void Encoder::Close(Writer& writer, uint64_t hash) {
+ 	const auto op = writer.GetHeader()->op;
+ 	m_ring.Commit(writer.Size());
+ 	if (KicksConsumer(op)) {
+-		m_ring.Kick(m_stats);
++		const bool draw = m_options.draw_wake_interval > 1 &&
++		                  op != Op::Submit && op != Op::DrainMarker && op != Op::Dispatch &&
++		                  op != Op::DispatchIndirect && op != Op::DispatchBase;
++		if (!draw || m_draws_until_wake == 0) {
++			m_ring.Kick(m_stats);
++			m_draws_until_wake = draw ? m_options.draw_wake_interval - 1 : 0;
++		} else {
++			// A running recorder can see this draw immediately. The submit, direct-window
++			// drain and ring-space paths always wake a parked recorder before waiting.
++			m_ring.Publish();
++			--m_draws_until_wake;
++		}
+ 	}
+ 	if (m_options.after_commit != nullptr) {
+ 		// Inline replay reads only published packets.
+@@ -1397,6 +1409,13 @@ void Encoder::hostCopy(void* destination, uint64_t source, uint64_t size) {
  	Close(w, m_options.verify ? VerifyHash::Value(Op::HostCopy, destination_bits, source, size) : 0);
  }
  
@@ -698,7 +866,7 @@ index a92aa20d..d5e583cb 100644
                                     vk::DeviceSize offset, uint32_t marker) {
  	const auto stage_bits = static_cast<uint32_t>(static_cast<VkPipelineStageFlagBits>(stage));
 diff --git a/src/graphics/host_gpu/renderer/commandStream.h b/src/graphics/host_gpu/renderer/commandStream.h
-index 6569e510..b4c0a4f6 100644
+index 6569e510..9222785e 100644
 --- a/src/graphics/host_gpu/renderer/commandStream.h
 +++ b/src/graphics/host_gpu/renderer/commandStream.h
 @@ -102,6 +102,7 @@ enum class Op : uint16_t {
@@ -719,7 +887,15 @@ index 6569e510..b4c0a4f6 100644
  struct WriteBufferMarkerPacket {
  	vk::Buffer buffer = nullptr;
  	uint64_t   offset = 0;
-@@ -750,6 +754,7 @@ public:
+@@ -621,6 +625,7 @@ public:
+ 		void* after_commit_context          = nullptr;
+ 		// Spin before blocking when the ring is full.
+ 		WaitPolicy policy;
++		uint32_t draw_wake_interval = 1;
+ 	};
+ 
+ 	// Packets after which a parked consumer is woken: the ends of emission sequences (draws,
+@@ -750,6 +755,7 @@ public:
  	void hostCopy(void* destination, uint64_t source, uint64_t size);
  	void writeBufferMarkerAMD(vk::PipelineStageFlagBits stage, vk::Buffer buffer, vk::DeviceSize offset,
  	                          uint32_t marker);
@@ -727,6 +903,14 @@ index 6569e510..b4c0a4f6 100644
  	void clearColorImage(vk::Image image, vk::ImageLayout layout, const vk::ClearColorValue* color,
  	                     uint32_t count, const vk::ImageSubresourceRange* ranges);
  	void clearDepthStencilImage(vk::Image image, vk::ImageLayout layout,
+@@ -769,6 +775,7 @@ private:
+ 
+ 	Ring&     m_ring;
+ 	Options   m_options;
++	uint32_t  m_draws_until_wake = 0;
+ 	WaitStats m_stats;
+ 	uint64_t  m_sequence   = 0;
+ 	uint64_t  m_packets    = 0;
 diff --git a/src/graphics/host_gpu/renderer/commandStreamReplay.inl b/src/graphics/host_gpu/renderer/commandStreamReplay.inl
 index f508e87b..e4f88417 100644
 --- a/src/graphics/host_gpu/renderer/commandStreamReplay.inl
@@ -1358,6 +1542,168 @@ index cb883de2..219e3bc8 100644
  			}
  		}
  		if (breadcrumbs) {
+diff --git a/src/graphics/host_gpu/renderer/dlss.cpp b/src/graphics/host_gpu/renderer/dlss.cpp
+index d43372e6..9ddcc3ee 100644
+--- a/src/graphics/host_gpu/renderer/dlss.cpp
++++ b/src/graphics/host_gpu/renderer/dlss.cpp
+@@ -30,6 +30,9 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <string>
++#include <filesystem>
++#include <mutex>
++#include "graphics/presentation/cameraTracking.h"
+ 
+ namespace Libs::Graphics {
+ 
+@@ -220,7 +223,7 @@ struct State {
+ };
+ 
+ State& Get() {
+-	static State state = [] {
++	static const auto configure = [] {
+ 		State s;
+ 		if (const char* value = std::getenv("ASTROHYBRID_DLSS_PASS"); value != nullptr) {
+ 			s.pass_hash = std::strtoull(value, nullptr, 16);
+@@ -238,8 +241,9 @@ State& Get() {
+ 			                                                     : 0;
+ 		}
+ 		return s;
+-	}();
+-	return state;
++	};
++	static std::array<State,2> eyes {configure(), configure()};
++	return eyes[Vr::SameFrameStereoEnabled() ? Vr::CameraRenderEye() : 0];
+ }
+ 
+ int64_t NowNs() {
+@@ -264,8 +268,8 @@ void Summary(State& s) {
+ 			text += " " + std::string(FALLBACK_NAMES[i]) + "=" + std::to_string(s.fallbacks[i]);
+ 		}
+ 	}
+-	std::printf("DLSS 10s: evaluations %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game pass kept:%s\n",
+-	            static_cast<unsigned long long>(s.evaluations), s.feature_in_w, s.feature_in_h,
++	std::printf("DLSS eye %d 10s: evaluations %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game pass kept:%s\n",
++	            Vr::CameraRenderEye(), static_cast<unsigned long long>(s.evaluations), s.feature_in_w, s.feature_in_h,
+ 	            s.feature_out_w, s.feature_out_h, static_cast<double>(s.last_jitter[0]),
+ 	            static_cast<double>(s.last_jitter[1]), text.empty() ? " none" : text.c_str());
+ 	std::fflush(stdout);
+@@ -430,6 +434,11 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	auto&      cache      = m_context.GetTextureCache();
+ 	const auto mv_id      = pixel.images[0].image_id;
+ 	const auto color_id   = pixel.images[1].image_id;
++	if (!mv_id || !color_id || output == mv_id || output == color_id ||
++	    !cache.m_slot_images.try_get(mv_id) || !cache.m_slot_images.try_get(color_id) ||
++	    !cache.m_slot_images.try_get(output)) {
++		return Fail(s, Fallback::Bindings);
++	}
+ 	ImageId    depth_id {};
+ 	for (const auto& pair: s.depth_pairs) {
+ 		if (pair.color == mv_id) {
+@@ -443,6 +452,15 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	auto& color = cache.GetImage(color_id);
+ 	auto& depth = cache.GetImage(depth_id);
+ 	auto& out   = cache.GetImage(output);
++	static const bool trace_sizes = std::getenv("ASTROHYBRID_TRACE_TARGET_SIZES") != nullptr;
++	if (trace_sizes && (frame % 120 == 0)) {
++		std::printf("Stereo target sizes: eye %d frame %u, constants %ux%u -> %ux%u; "
++		            "color %ux%u mv %ux%u depth %ux%u target %ux%u\n",
++		            Vr::CameraRenderEye(), frame, in_w, in_h, out_w, out_h,
++		            color.info.extent.width, color.info.extent.height, mv.info.extent.width,
++		            mv.info.extent.height, depth.info.extent.width, depth.info.extent.height,
++		            out.info.extent.width, out.info.extent.height);
++	}
+ 	const auto same = [](const Image& image, uint32_t w, uint32_t h) {
+ 		return image.info.extent.width == w && image.info.extent.height == h &&
+ 		       image.backing.image != nullptr && image.info.samples == 1;
+@@ -455,20 +473,27 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	auto& graphics = m_context.GetGraphics();
+ 	if (!s.init_tried) {
+ 		s.init_tried = true;
+-		const char*  path_value = std::getenv("ASTROHYBRID_DLSS_PATH");
+-		std::wstring path       = path_value != nullptr
+-		                              ? std::wstring(path_value, path_value + std::strlen(path_value))
+-		                              : std::wstring(L"E:\\AstroHybrid-Work\\sdk\\streamline-v2.14.16\\bin\\x64");
+-		const wchar_t*              paths[] = {path.c_str()};
+-		NVSDK_NGX_FeatureCommonInfo info {};
+-		info.PathListInfo.Path   = paths;
+-		info.PathListInfo.Length = 1;
+-		const auto result = NVSDK_NGX_VULKAN_Init_with_ProjectID(
+-		    "8e5a33f4-7e0f-4c5b-9a5c-1c2e7d4b3a10", NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0",
+-		    L"E:\\AstroHybrid-Work\\ngx-data", static_cast<VkInstance>(graphics.instance),
+-		    static_cast<VkPhysicalDevice>(graphics.physical_device),
+-		    static_cast<VkDevice>(graphics.device), VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
+-		    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr, &info);
++		static std::once_flag init;
++		static NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
++		std::call_once(init, [&] {
++			const char* override_path = std::getenv("ASTROHYBRID_DLSS_PATH");
++			const auto directory = std::filesystem::absolute(override_path ? override_path : ".");
++			const std::wstring path = directory.wstring();
++			const wchar_t* paths[] = {path.c_str()};
++			NVSDK_NGX_FeatureCommonInfo info {};
++			info.PathListInfo.Path = paths;
++			info.PathListInfo.Length = 1;
++			const auto data = std::filesystem::current_path() / L"ngx-data";
++			std::error_code error;
++			std::filesystem::create_directories(data, error);
++			if (error) return;
++			result = NVSDK_NGX_VULKAN_Init_with_ProjectID(
++			    "8e5a33f4-7e0f-4c5b-9a5c-1c2e7d4b3a10", NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0",
++			    data.c_str(), static_cast<VkInstance>(graphics.instance),
++			    static_cast<VkPhysicalDevice>(graphics.physical_device), static_cast<VkDevice>(graphics.device),
++			    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
++			    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr, &info);
++		});
+ 		if (NVSDK_NGX_FAILED(result) ||
+ 		    NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&s.params))) {
+ 			std::printf("DLSS: NGX initialisation failed (0x%08x)\n", static_cast<unsigned>(result));
+@@ -499,9 +524,12 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	if (s.feature == nullptr || s.feature_in_w != in_w || s.feature_in_h != in_h ||
+ 	    s.feature_out_w != out_w || s.feature_out_h != out_h) {
+ 		if (s.feature != nullptr) {
+-			NVSDK_NGX_VULKAN_ReleaseFeature(s.feature);
++			m_context.GetCommandScheduler().DeferOperation([retired = s.feature] {
++				NVSDK_NGX_VULKAN_ReleaseFeature(retired);
++			});
+ 			s.feature = nullptr;
+ 		}
++		s.last_frame = 0;
+ 		NVSDK_NGX_DLSS_Create_Params create {};
+ 		create.Feature.InWidth        = in_w;
+ 		create.Feature.InHeight       = in_h;
+@@ -567,6 +595,12 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	views[1] = make_view(mv, vk::ImageAspectFlagBits::eColor);
+ 	views[2] = make_view(depth, vk::ImageAspectFlagBits::eDepth);
+ 	views[3] = make_view(out, vk::ImageAspectFlagBits::eColor);
++	if (!views[0] || !views[1] || !views[2] || !views[3]) {
++		for (auto view : views) {
++			if (view) device.destroyImageView(view);
++		}
++		return Fail(s, Fallback::Bindings);
++	}
+ 	const auto resource = [&](const Image& image, vk::ImageView view, vk::ImageAspectFlags aspect,
+ 	                          bool write) {
+ 		const VkImageSubresourceRange range {static_cast<VkImageAspectFlags>(aspect), 0, 1, 0, 1};
+@@ -591,8 +625,8 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	eval.InMVScaleX        = -static_cast<float>(in_w);
+ 	eval.InMVScaleY        = -static_cast<float>(in_h);
+ 	eval.InRenderSubrectDimensions = {in_w, in_h};
+-	eval.InReset = (s.last_frame != 0 && frame != s.last_frame + 1) ? 1 : 0;
+-	s.last_frame     = frame;
++	eval.InReset = (s.last_frame == 0 || frame != s.last_frame + 1) ? 1 : 0;
++	
+ 	s.last_jitter[0] = eval.InJitterOffsetX;
+ 	s.last_jitter[1] = eval.InJitterOffsetY;
+ 	const auto result =
+@@ -616,6 +650,7 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+ 	// The output now holds DLSS's image: a GPU write of the target, as the draw's would be.
+ 	out.NoteContentWrite();
+ 	cache.CommitGpuWrite(out);
++	s.last_frame = frame;
+ 	s.evaluations++;
+ 	Summary(s);
+ 	return true;
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp b/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
 index 45a7df72..1cfda621 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
@@ -1572,7 +1918,7 @@ index 5b6c0a8e..88bd6e62 100644
  void NoteRecorded(const DrawShape& shape);
  void EndDraw();
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp
-index 8ec061a6..c54570c4 100644
+index 8ec061a6..ed7a3195 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp
 +++ b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp
 @@ -27,6 +27,7 @@
@@ -1691,7 +2037,25 @@ index 8ec061a6..c54570c4 100644
  		Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepSelfPrepared);
  		Commit(slot);
  		return true;
-@@ -1807,6 +1848,55 @@ void Engine::Commit(Slot& slot) {
+@@ -1804,9 +1845,79 @@ void Engine::Commit(Slot& slot) {
+ 	}
+ 	auto&      scheduler = m_renderer.GetCommandScheduler();
+ 	auto&      executor  = m_renderer.GetRenderExecutor();
++#if KYTY_CP_DIAGNOSTICS
++	// Sample paired executor calls on the command thread. Vary the sampled slot to avoid
++	// repeatedly measuring the same draw in levels with a regular command sequence.
++	static const bool time_eyes = [] {
++		const auto* setting = std::getenv("KYTY_STEREO_COMMIT_TIMING");
++		return setting != nullptr && std::strcmp(setting, "1") == 0;
++	}();
++	static thread_local uint32_t stride_state = 1;
++	bool sample_pair = false;
++	uint64_t eye_start = 0, secondary_ns = 0;
++	if (time_eyes && m_renderer.GetStereoEyeContext()) {
++		stride_state = stride_state * 1664525u + 1013904223u;
++		sample_pair = (stride_state >> 22u) == 0;
++	}
++#endif
  	const auto previous  = scheduler.BindRegisters(slot.registers.context,
  	                                               slot.registers.user_config,
  	                                               slot.registers.shaders);
@@ -1723,11 +2087,17 @@ index 8ec061a6..c54570c4 100644
 +		eye_executor.m_run_swap_key = slot.run_swap_key;
 +		eye_executor.m_run_parts = slot.run_parts_valid ? &slot.run_parts : nullptr;
 +		eye_executor.m_in_engine_commit = true;
++#if KYTY_CP_DIAGNOSTICS
++		if (sample_pair) eye_start = NowNs();
++#endif
 +		if (slot.kind == DrawKind::Index) {
 +			eye_executor.DrawIndex(slot.submit_id, eye_buffer, slot.index_args);
 +		} else {
 +			eye_executor.DrawAuto(slot.submit_id, eye_buffer, slot.auto_args);
 +		}
++#if KYTY_CP_DIAGNOSTICS
++		if (sample_pair) secondary_ns = NowNs() - eye_start;
++#endif
 +		eye_executor.m_prepared_draw = nullptr;
 +		if (slot.prepared.borrow_stereo_inputs) eye_executor.ReleaseBorrowedShaderInputs(slot.prepared);
 +		eye_executor.m_prepared_draw_borrowed = false;
@@ -1747,6 +2117,34 @@ index 8ec061a6..c54570c4 100644
  	executor.m_prepared_draw = &slot.prepared;
  	// KYTY_DRAW_PREP_BINDINGS: the slot's plan, which RefreshShaders activates once Validate
  	// accepted the preparation it was computed from.
+@@ -1820,11 +1931,27 @@ void Engine::Commit(Slot& slot) {
+ 	executor.m_in_engine_commit = true;
+ 	CommitStats::StepMark(CommitStats::Step::BindRegs);
+ 	CommitStats::StepMark(CommitStats::Step::Calib);
++#if KYTY_CP_DIAGNOSTICS
++	if (sample_pair) eye_start = NowNs();
++#endif
+ 	if (slot.kind == DrawKind::Index) {
+ 		executor.DrawIndex(slot.submit_id, scheduler.Current(), slot.index_args);
+ 	} else {
+ 		executor.DrawAuto(slot.submit_id, scheduler.Current(), slot.auto_args);
+ 	}
++#if KYTY_CP_DIAGNOSTICS
++	if (sample_pair) {
++		static thread_local uint64_t primary_sum = 0, secondary_sum = 0;
++		static thread_local unsigned samples = 0;
++		primary_sum += NowNs() - eye_start;
++		secondary_sum += secondary_ns;
++		if (++samples == 256) {
++			std::printf("Stereo draw sample: %u pairs, primary %.3f us/draw, secondary %.3f us/draw\n",
++			            samples, primary_sum / (1000.0 * samples), secondary_sum / (1000.0 * samples));
++			primary_sum = secondary_sum = samples = 0;
++		}
++	}
++#endif
+ 	executor.m_in_engine_commit = false;
+ 	executor.m_run_key          = 0;
+ 	executor.m_run_targets_key  = 0;
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h
 index d34b4520..3dbf17eb 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h
@@ -1822,7 +2220,7 @@ index c243b20e..6dbd4bd5 100644
  		if (line_width != width) {
  			line_width             = width;
 diff --git a/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp b/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp
-index e7fa0596..5ffe2e37 100644
+index e7fa0596..e4123c5d 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp
 +++ b/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp
 @@ -78,6 +78,7 @@ namespace Libs::Graphics {
@@ -1833,7 +2231,84 @@ index e7fa0596..5ffe2e37 100644
  
  } // namespace
  
-@@ -1776,8 +1777,7 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
+@@ -212,7 +213,7 @@ static vk::DescriptorBufferInfo
+ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource& source,
+                     const ShaderRecompiler::IR::BufferResource& resource, ShaderType stage,
+                     uint32_t slot, uint32_t& buffer_offset,
+-                    const std::vector<GuestRange>* written_ranges, bool uniform_view) {
++                    const std::vector<GuestRange>* written_ranges, vk::DeviceSize alignment, uint64_t range_cap) {
+ 	buffer_offset = 0;
+ 
+ 	const auto& [address, size, id] = source;
+@@ -222,13 +223,6 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
+ 		return {context.GetBufferCache().GetBuffer(NULL_BUFFER_ID).Handle(), 0, 16};
+ 	}
+ 	const auto& graphics  = context.GetGraphics();
+-	// A buffer bound as a uniform buffer (KYTY_UNIFORM_BUFFERS) meets both offset alignments, so
+-	// the one base adjustment in shader data serves either view.
+-	const auto  alignment =
+-	    uniform_view ? std::max<vk::DeviceSize>(
+-	                       graphics.StorageMinAlignment(),
+-	                       graphics.GetPhysicalDeviceProperties().limits.minUniformBufferOffsetAlignment)
+-	                 : graphics.StorageMinAlignment();
+ 	if (size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
+ 		EXIT("storage buffer range is unsupported\n");
+ 	}
+@@ -254,7 +248,8 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
+ 		                              BufferLookupStats::Now() - lookup_start);
+ 	}
+ 	BufferLookupStats::PartScope descriptor_scope(BufferLookupStats::Part::Descriptor);
+-	const auto aligned_offset = Common::AlignDown(offset, alignment);
++	// Vulkan storage and uniform buffer offset alignments are powers of two.
++	const auto aligned_offset = offset & ~(alignment - 1);
+ 	const auto adjustment     = offset - aligned_offset;
+ 	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
+ 	if (adjustment >= 256 || size > max_range - adjustment) {
+@@ -268,7 +263,7 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
+ 	const auto range =
+ 	    std::min(size + adjustment >= 4u ? Common::AlignDown(size + adjustment, uint64_t {4})
+ 	                                     : size + adjustment,
+-	             StorageRangeCap(graphics));
++	             range_cap);
+ 	const vk::DescriptorBufferInfo result {buffer->Handle(), aligned_offset, range};
+ 	descriptor_scope.Stop();
+ 	const auto invalidate_start = resource.written ? BufferLookupStats::Now() : 0;
+@@ -1649,7 +1644,13 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
+ 	// KYTY_DRAW_RUN continuation: the texture and sampler bindings are the previous draw's (the
+ 	// same program, T# and S# words; RenderExecutor::DrawRunCandidate).
+ 	CommitStats::SubScope texture_scope(CommitStats::Sub::Textures);
+-	if (!keep_images && !RepeatStageTextures(program, snapshot, prepared)) {
++	if (!keep_images && program.info.images.empty()) {
++		// An image-free stage cannot hit the texture memo. Drop the previous set
++		// without probing history or recording an empty set in its place.
++		prepared.images.clear();
++		prepared.texture_program = nullptr;
++		prepared.texture_words.clear();
++	} else if (!keep_images && !RepeatStageTextures(program, snapshot, prepared)) {
+ 		// KYTY_DRAW_PREP_BINDINGS textures: the memo hashes the preparing worker computed.
+ 		const auto count  = static_cast<uint32_t>(program.info.images.size());
+ 		const bool hashes = plan != nullptr && plan->texture_hashes_valid &&
+@@ -1727,11 +1728,16 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
+ 	// resolved here as before.
+ 	const bool plan_samplers = plan != nullptr && plan->samplers_valid &&
+ 	                           plan->samplers.size() == program.info.samplers.size();
+-	if (!keep_images) {
++	const bool copy_samplers = !keep_images && plan_samplers && !verify &&
++	                           std::find(plan->samplers.begin(), plan->samplers.end(), vk::Sampler{}) ==
++	                               plan->samplers.end();
++	if (copy_samplers) {
++		prepared.samplers.assign(plan->samplers.begin(), plan->samplers.end());
++	} else if (!keep_images) {
+ 		prepared.samplers.reserve(program.info.samplers.size());
+ 	}
+-	uint32_t planned_samplers = 0;
+-	for (uint32_t i = 0; !keep_images && i < program.info.samplers.size(); i++) {
++	uint32_t planned_samplers = copy_samplers ? static_cast<uint32_t>(plan->samplers.size()) : 0;
++	for (uint32_t i = 0; !keep_images && !copy_samplers && i < program.info.samplers.size(); i++) {
+ 		auto sampler = plan_samplers ? plan->samplers[i] : vk::Sampler {};
+ 		planned_samplers += sampler != nullptr ? 1u : 0u;
+ 		if (sampler == nullptr || verify) {
+@@ -1776,8 +1782,7 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
  			}
  		}
  	}
@@ -1843,7 +2318,17 @@ index e7fa0596..5ffe2e37 100644
  		prepared.gds.buffer = m_context.GetBufferCache().GetGdsBuffer()->Handle();
  		NoteGdsProgram(program, snapshot);
  	}
-@@ -1860,6 +1860,7 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
+@@ -1844,6 +1849,9 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
+ 	const BufferLookupStats::PartScope stats_scope(BufferLookupStats::Part::FindBuffer);
+ 
+ 	prepared.buffer_sources.clear();
++	if (program.info.buffers.empty()) {
++		return;
++	}
+ 	prepared.buffer_sources.reserve(program.info.buffers.size());
+ 	// KYTY_DRAW_PREP_BINDINGS buffers: the ranges the worker decoded and clamped, while the guest
+ 	// virtual ranges are the ones it clamped against. FindBuffer (it may create and join buffers)
+@@ -1860,6 +1868,7 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
  		OwnedCounters::Add(DrawPrep::GetBindingTotals().ranges_used, 1);
  	}
  	const bool verify = use_plan && DrawPrep::BindingsVerifyMode() != 0;
@@ -1851,7 +2336,7 @@ index e7fa0596..5ffe2e37 100644
  	const auto& graphics = m_context.GetGraphics();
  	const uint64_t unbounded_read_limit = std::min<uint64_t>(
  	    uint64_t {256} * 1024 * 1024,
-@@ -1942,9 +1943,9 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
+@@ -1942,12 +1951,12 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
  			// decode the V# here, so the plan and serial ranges above stay as they are.
  			size = unbounded_read_limit;
  		}
@@ -1862,8 +2347,12 @@ index e7fa0596..5ffe2e37 100644
 +			cache.PrefetchReadBinding(address, size);
  		}
  		BufferLookupStats::PartScope find_scope(BufferLookupStats::Part::FindCall);
- 		prepared.buffer_sources.push_back({address, size, cache.FindBuffer(address, size)});
-@@ -2232,28 +2233,39 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+-		prepared.buffer_sources.push_back({address, size, cache.FindBuffer(address, size)});
++		prepared.buffer_sources.push_back({address, size, cache.FindDescriptorBuffer(address, size, verify)});
+ 	}
+ }
+ 
+@@ -2232,31 +2241,49 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
  	// KYTY_CP_BINDING_BATCH_PREFETCH: the memo slots of every read binding first, so their cache
  	// misses overlap (a hint only; the lookups below are unchanged).
  	BufferLookupStats::PartScope prefetch_scope(BufferLookupStats::Part::Prefetch);
@@ -1890,6 +2379,11 @@ index e7fa0596..5ffe2e37 100644
 +	// Both resource indices and this binding list are ordered. Walk it once instead
 +	// of repeating a binary search for every buffer on every draw.
 +	size_t uniform_cursor = 0;
++	const auto& graphics = m_context.GetGraphics();
++	const auto storage_alignment = graphics.StorageMinAlignment();
++	const auto uniform_alignment = std::max(storage_alignment,
++	    graphics.GetPhysicalDeviceProperties().limits.minUniformBufferOffsetAlignment);
++	const auto range_cap = StorageRangeCap(graphics);
  	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
  		uint32_t   buffer_offset = 0;
  		const auto ranges_start  = program.info.buffers[i].written ? BufferLookupStats::Now() : 0;
@@ -1913,8 +2407,14 @@ index e7fa0596..5ffe2e37 100644
 +		}
  		prepared.buffers.push_back(NativeStorageBuffer(m_context, prepared.buffer_sources[i],
  		                                               program.info.buffers[i], program.stage, i,
- 		                                               buffer_offset, written, uniform_view));
-@@ -2271,14 +2283,12 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+-		                                               buffer_offset, written, uniform_view));
++		                                               buffer_offset, written,
++		                                               uniform_view ? uniform_alignment : storage_alignment,
++		                                               range_cap));
+ 		pack_memory_offset(i, buffer_offset);
+ 	}
+ 	CommitStats::StepMark(CommitStats::Step::RbBindings);
+@@ -2271,14 +2298,12 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
  	// Upload sites: stage type and table kind (the dedup checks the site's last entry first).
  	const auto site = static_cast<uint32_t>(program.stage) * 2u;
  	prepared.fresh_upload = false;
@@ -1931,7 +2431,7 @@ index e7fa0596..5ffe2e37 100644
  		bool fresh                  = false;
  		prepared.shader_data_buffer = UploadShaderData(prepared.shader_data, site + 1u, &fresh);
  		prepared.fresh_upload |= fresh;
-@@ -2812,39 +2822,15 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -2812,39 +2837,15 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  	// this command buffer only as the batch target (identity; KYTY_CP_RECORDER records nothing
  	// through it).
  	const auto vk_buffer    = buffer.Identity();
@@ -1975,7 +2475,7 @@ index e7fa0596..5ffe2e37 100644
  	// KYTY_DRAW_RUN_PUSH: a continuation pushes only its per-draw descriptors; its image and sampler
  	// descriptors are the previous draw's, still in effect (RenderExecutor::DrawRunPartialPush).
  	const bool partial = keep_images && pipeline_bind_point == vk::PipelineBindPoint::eGraphics &&
-@@ -2854,12 +2840,12 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -2854,12 +2855,12 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  	}
  	CommitStats::StepMark(CommitStats::Step::CbHead);
  
@@ -1990,7 +2490,7 @@ index e7fa0596..5ffe2e37 100644
  			KYTY_GPU_OP_SITE("descriptors.gds_barrier");
  			const auto barrier = MakeGdsDependency(descriptors.gds.buffer);
  			constexpr auto source_stages =
-@@ -2949,7 +2935,14 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -2949,7 +2950,14 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  		transitions_scope.Stop();
  		CommitStats::StepMark(CommitStats::Step::CbTransitions);
  		const CommitStats::SubScope build_scope(CommitStats::Sub::DescBuild);
@@ -2006,7 +2506,7 @@ index e7fa0596..5ffe2e37 100644
  		for (const auto& binding: program.bindings.descriptors) {
  			if (partial && (binding.kind == BindingKind::Samplers ||
  			                ShaderRecompiler::IR::ImageBindingResourceClass(binding.kind) !=
-@@ -2965,12 +2958,28 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -2965,12 +2973,28 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  			if (ShaderRecompiler::IR::ImageBindingResourceClass(binding.kind) !=
  			    ShaderRecompiler::IR::ImageResourceClass::None) {
  				for (const auto resource: binding.resources) {
@@ -2037,7 +2537,7 @@ index e7fa0596..5ffe2e37 100644
  						for (const auto resource: binding.resources) {
  							const auto& view = descriptors.buffers.at(resource);
  							EXIT_IF(view.buffer == nullptr);
-@@ -3023,7 +3032,11 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -3023,7 +3047,11 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  							view = &descriptors.shared_memory;
  						}
  						EXIT_IF(view->buffer == nullptr);
@@ -2050,7 +2550,7 @@ index e7fa0596..5ffe2e37 100644
  						break;
  					}
  					case BindingKind::Samplers:
-@@ -3045,7 +3058,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -3045,7 +3073,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  			}
  			m_descriptor_writes.push_back(write);
  		}
@@ -2059,7 +2559,7 @@ index e7fa0596..5ffe2e37 100644
  			const auto expected =
  			    descriptors.images[i].mip_views.empty()
  			        ? 1u
-@@ -3065,14 +3078,14 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -3065,14 +3093,14 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  
  	if (has_push_data) {
  		const CommitStats::SubScope push_scope(CommitStats::Sub::PushConst);
@@ -2076,7 +2576,7 @@ index e7fa0596..5ffe2e37 100644
  		// The mesh draw path then records its draw arguments over the first push-constant dwords
  		// through StateHandle(); the shadow no longer describes what is in effect.
  		buffer.InvalidatePushConstants();
-@@ -3120,7 +3133,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -3120,7 +3148,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
  			const auto result = buffer.PushDescriptors(
  			    pipeline_bind_point, pipeline.pipeline_layout, 0,
  			    static_cast<uint32_t>(m_descriptor_writes.size()), m_descriptor_writes.data(),
@@ -2085,7 +2585,7 @@ index e7fa0596..5ffe2e37 100644
  			CountDescriptorPushMiss(result, m_descriptor_writes);
  		} else {
  			const CommitStats::SubScope desc_scope(CommitStats::Sub::DescSet);
-@@ -3224,8 +3237,9 @@ void RenderExecutor::CommitDescriptorSet(CommandBuffer& buffer, vk::PipelineBind
+@@ -3224,8 +3252,9 @@ void RenderExecutor::CommitDescriptorSet(CommandBuffer& buffer, vk::PipelineBind
  			buffer.StateSink().updateDescriptorSets(m_context.GetGraphics().device, set, count,
  			                                        m_descriptor_writes.data());
  		} else {
@@ -3654,15 +4154,123 @@ index a1bd8541..5cf3ebd6 100644
  			LogMemoryBudget();
  			return false;
  		}
+diff --git a/src/graphics/presentation/astroEyeResolution.h b/src/graphics/presentation/astroEyeResolution.h
+new file mode 100644
+index 00000000..13e19bdb
+--- /dev/null
++++ b/src/graphics/presentation/astroEyeResolution.h
+@@ -0,0 +1,101 @@
++// Resolution descriptors of the guarded PPSA21567 v01.019 conversion.
++// Verify every descriptor before changing any of them.
++#pragma once
++#if defined(_WIN32)
++#include <windows.h>
++#include <array>
++#include <cmath>
++#include <cstdint>
++#include <cstring>
++#include <vector>
++
++namespace Libs::Vr {
++inline bool SetAstroEyeResolution(unsigned width, unsigned height, double scale, bool largeTargets) {
++    auto* base = reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
++    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
++    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
++    const auto* sections = IMAGE_FIRST_SECTION(nt);
++    struct Edit { unsigned char* dest; unsigned value, size; };
++    std::vector<Edit> edits;
++    bool valid = true;
++    auto add = [&](unsigned offset, unsigned old, unsigned value, unsigned size = 4) {
++        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
++            const auto& s = sections[i];
++            if (offset < s.PointerToRawData || size > s.SizeOfRawData ||
++                offset - s.PointerToRawData > s.SizeOfRawData - size) continue;
++            auto* dest = base + s.VirtualAddress + offset - s.PointerToRawData;
++            if (std::memcmp(dest, &old, size) != 0) valid = false;
++            edits.push_back({dest, value, size});
++            return;
++        }
++        valid = false;
++    };
++    constexpr unsigned widths[] = {1920,2432,2432,3328,3840};
++    constexpr unsigned heights[] = {1080,1368,1368,1872,2160};
++    const auto input = [scale](unsigned v) { return unsigned(std::round(v*scale/16))*16; };
++    const auto floatBits = [](unsigned v) { float f = float(v); unsigned n; std::memcpy(&n,&f,4); return n; };
++    // Scaled 3200 rendering uses the SR input at startup and on the world map too.
++    const bool scaled3200 = width == 3200 && scale < 1.0;
++    const bool preserveNativeTiers = width <= 3200 && !scaled3200;
++    for (unsigned i=0;i<5;++i) {
++        const bool nativeTier = i && preserveNativeTiers;
++        const unsigned w=nativeTier ? width:input(width), h=nativeTier ? height:input(height);
++        for(auto site:{0x8491fd4u,0x8721b50u,0x87ff480u}) add(site+i*4,widths[i],w);
++        for(auto site:{0x8491fc0u,0x8721b64u,0x87ff494u}) add(site+i*4,heights[i],h);
++        for(auto site:{0x8721b78u,0x87fb408u,0x87ff4a8u}) add(site+i*4,floatBits(widths[i]),floatBits(w));
++        add(0x87225e8+i*2,widths[i],w,2);
++        add(0x87225f2+i*2,heights[i],h,2);
++    }
++    constexpr unsigned constructors[][4] = {
++        {0x73af2ef,0x741668f,0x741672a,0},{0x73af2a9,0x7416649,0x74166e7,1},
++        {0x73af2fc,0x741669c,0x7416738,3},{0x73af309,0x74166a9,0x7416746,4}};
++    for(const auto& row:constructors) for(int i=0;i<3;++i) {
++        auto tier=row[3]; add(row[i],widths[tier],tier && preserveNativeTiers ? width:input(width));
++        add(row[i]+6,heights[tier],tier && preserveNativeTiers ? height:input(height));
++    }
++    for(auto p:{0x73953e9,0x7397cac}) add(p,2432,width);
++    for(auto p:{0x739541a,0x7397ca7}) add(p,3840,width);
++    for(auto p:{0x739540e,0x7397cb6,0x73af406}) add(p,1368,height);
++    for(auto p:{0x73953ee,0x7397cb1,0x73af414}) add(p,2160,height);
++    for(auto p:{0x2c2ded,0x745de71,0x73ddf9d}) { add(p,3840,width); add(p+4,2160,height); }
++    add(0x73de287,3840,width,2); add(0x73de289,2160,height,2);
++    if (width > 3200 || (scaled3200 && largeTargets)) {
++        const bool large = width > 3520;
++        add(0x737c19f,0x01000000,large ? 0x06000000 : 0x03000000);
++        add(0x737c1dc,0x01000000,large ? 0x06000000 : 0x03000000);
++        add(0x737c0dc,0x17800000,large ? 0x38000000 : 0x24000000);
++        add(0x737c0e1,0x1d200000,large ? 0x4c000000 : 0x28000000);
++        add(0x2b118f,0x87c00000,large ? 0xfa000000 : 0xa8000000);
++        if (large) {
++            add(0x737c0ee,0x0b400000,0x1a000000);
++            add(0x737c0f4,0x0cc00000,0x1c000000);
++        }
++    } else if (uint64_t(width)*height > 2560ull*2352) {
++        // The first register drives both allocation and capacity. The smaller
++        // pool has separate allocation and capacity operands.
++        add(0x737c0dc,0x17800000,0x1c000000);
++        add(0x737c19f,0x01000000,0x02400000);
++        add(0x737c1dc,0x01000000,0x02400000);
++    }
++    if (!valid) return false;
++    SYSTEM_INFO info{}; GetSystemInfo(&info);
++    struct Page { void* address; DWORD protection; };
++    std::vector<Page> pages;
++    auto restore = [&]() {
++        for(auto& p:pages) { DWORD previous; VirtualProtect(p.address,info.dwPageSize,p.protection,&previous); }
++    };
++    for(const auto& edit:edits) {
++        auto* page=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(edit.dest) & ~(uintptr_t(info.dwPageSize)-1));
++        bool found=false; for(const auto& p:pages) if(p.address==page) found=true;
++        if(found) continue;
++        DWORD old;
++        if(!VirtualProtect(page,info.dwPageSize,PAGE_EXECUTE_READWRITE,&old)) { restore(); return false; }
++        pages.push_back({page,old});
++    }
++    for(const auto& edit:edits) std::memcpy(edit.dest,&edit.value,edit.size);
++    for(auto& p:pages) FlushInstructionCache(GetCurrentProcess(),p.address,info.dwPageSize);
++    restore();
++    return true;
++}
++}
++#endif
 diff --git a/src/graphics/presentation/openxrHeadset.cpp b/src/graphics/presentation/openxrHeadset.cpp
-index bbfb9446..4c1c4b8d 100644
+index bbfb9446..bcfbf0b7 100644
 --- a/src/graphics/presentation/openxrHeadset.cpp
 +++ b/src/graphics/presentation/openxrHeadset.cpp
-@@ -1,4 +1,11 @@
+@@ -1,4 +1,12 @@
  #include "graphics/presentation/openxrHeadset.h"
 +#include "graphics/presentation/stagingSelection.h"
 +#include "graphics/presentation/cameraTracking.h"
 +#include "graphics/presentation/physicsFaultCapture.h"
++#include "graphics/presentation/astroEyeResolution.h"
 +
 +#if defined(KYTY_VR_PROFILE_CAPTURE)
 +extern "C" int __llvm_profile_write_file();
@@ -3670,7 +4278,7 @@ index bbfb9446..4c1c4b8d 100644
  
  #include "common/emulatorConfig.h"
  #include "common/logging/log.h"
-@@ -9,11 +16,13 @@
+@@ -9,11 +17,13 @@
  #include "graphics/host_gpu/renderer/renderContext.h"
  #include "graphics/presentation/vrInput.h"
  #include "libs/hmd2.h"
@@ -3684,7 +4292,7 @@ index bbfb9446..4c1c4b8d 100644
  #include <cmath>
  #include <cstdlib>
  #include <cstring>
-@@ -56,8 +65,17 @@ constexpr int STAGING_COUNT = 3;
+@@ -56,8 +66,17 @@ constexpr int STAGING_COUNT = 3;
  
  struct Staging {
  	VulkanImage image;
@@ -3702,7 +4310,7 @@ index bbfb9446..4c1c4b8d 100644
  };
  
  struct State {
-@@ -73,23 +91,37 @@ struct State {
+@@ -73,23 +92,37 @@ struct State {
  	PFN_xrGetVulkanGraphicsDeviceKHR       get_graphics_device = nullptr;
  
  	GraphicContext*  graphics = nullptr;
@@ -3742,7 +4350,7 @@ index bbfb9446..4c1c4b8d 100644
  
  	XrActionSet action_set = XR_NULL_HANDLE;
  	XrAction    actions[ACTION_COUNT] {};
-@@ -100,10 +132,23 @@ struct State {
+@@ -100,10 +133,23 @@ struct State {
  	VrControllerInput input[2];
  	VrPose            head;
  	VrPose            last_head_read;
@@ -3766,7 +4374,7 @@ index bbfb9446..4c1c4b8d 100644
  bool Ok(XrResult result, const char* what) {
  	if (XR_SUCCEEDED(result)) {
  		return true;
-@@ -306,6 +351,23 @@ bool CreateInput() {
+@@ -306,6 +352,23 @@ bool CreateInput() {
  // The head is tracked while the frame loop runs; the controllers only while the session has focus.
  void PollInput(XrTime time) {
  	const auto        head = Locate(g.view_space, time);
@@ -3790,7 +4398,7 @@ index bbfb9446..4c1c4b8d 100644
  	VrControllerInput input[2];
  	XrActiveActionSet active {g.action_set, XR_NULL_PATH};
  	XrActionsSyncInfo sync {XR_TYPE_ACTIONS_SYNC_INFO};
-@@ -350,6 +412,8 @@ void PollInput(XrTime time) {
+@@ -350,6 +413,8 @@ void PollInput(XrTime time) {
  	}
  	std::lock_guard lock(g.input_mutex);
  	g.head     = head;
@@ -3799,7 +4407,7 @@ index bbfb9446..4c1c4b8d 100644
  	g.input[0] = input[0];
  	g.input[1] = input[1];
  }
-@@ -389,11 +453,11 @@ void HandleEvents() {
+@@ -389,11 +454,11 @@ void HandleEvents() {
  	}
  }
  
@@ -3813,7 +4421,7 @@ index bbfb9446..4c1c4b8d 100644
  		if (!Ok(xrAcquireSwapchainImage(g.swapchain, &acquire, &image), "acquire")) {
  			return false;
  		}
-@@ -407,64 +471,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
+@@ -407,64 +472,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
  		vk::CommandBufferBeginInfo begin {};
  		begin.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
  		(void)g.command.begin(&begin);
@@ -3947,7 +4555,7 @@ index bbfb9446..4c1c4b8d 100644
  }
  
  // The game drew the picture for the head pose it read, so it is placed in the world at that pose
-@@ -479,12 +588,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -479,12 +589,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  	XrView      located[2] {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
  	uint32_t    count = 0;
  	const bool  valid =
@@ -3961,7 +4569,7 @@ index bbfb9446..4c1c4b8d 100644
  	// The outer side of each eye is its temporal side: left for the left eye.
  	const float out    = std::atan(Hmd2::FOV_TAN_OUT);
  	const float in     = std::atan(Hmd2::FOV_TAN_IN);
-@@ -494,15 +600,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -494,15 +601,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  		const float side = eye == 0 ? -Hmd2::EYE_OFFSET_M : Hmd2::EYE_OFFSET_M;
  		auto&       view = views[eye];
  		view.pose        = valid ? located[eye].pose : XrPosef {{0, 0, 0, 1}, {side, 0, 0}};
@@ -3993,7 +4601,7 @@ index bbfb9446..4c1c4b8d 100644
  		view.subImage.imageArrayIndex = static_cast<uint32_t>(eye);
  	}
  	layer.space     = head.valid ? g.local_space : g.view_space;
-@@ -511,18 +629,78 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -511,18 +630,78 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  }
  
  void ThreadMain() {
@@ -4073,7 +4681,7 @@ index bbfb9446..4c1c4b8d 100644
  			if (!Ok(xrBeginFrame(g.session, &begin), "xrBeginFrame")) {
  				continue;
  			}
-@@ -530,17 +708,92 @@ void ThreadMain() {
+@@ -530,17 +709,92 @@ void ThreadMain() {
  		XrCompositionLayerProjection     layer {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
  		XrCompositionLayerProjectionView views[2] {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
  		                                           {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
@@ -4172,7 +4780,7 @@ index bbfb9446..4c1c4b8d 100644
  	}
  }
  
-@@ -550,6 +803,7 @@ void OpenXrInit() {
+@@ -550,6 +804,7 @@ void OpenXrInit() {
  	if (!Config::VrEnabled()) {
  		return;
  	}
@@ -4180,7 +4788,7 @@ index bbfb9446..4c1c4b8d 100644
  	if (const char* env = std::getenv("KYTY_OPENXR");
  	    env != nullptr && std::strcmp(env, "0") == 0) {
  		return;
-@@ -561,6 +815,33 @@ void OpenXrInit() {
+@@ -561,6 +816,33 @@ void OpenXrInit() {
  	info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
  	info.enabledExtensionCount      = 1;
  	info.enabledExtensionNames      = extensions;
@@ -4214,7 +4822,7 @@ index bbfb9446..4c1c4b8d 100644
  	if (XR_FAILED(xrCreateInstance(&info, &g.instance))) {
  		DestroyInstance("no runtime available");
  		return;
-@@ -602,6 +883,64 @@ void OpenXrInit() {
+@@ -602,6 +884,64 @@ void OpenXrInit() {
  	xrEnumerateViewConfigurationViews(g.instance, g.system,
  	                                  XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &count, views);
  	g.eye = {views[0].recommendedImageRectWidth, views[0].recommendedImageRectHeight};
@@ -4279,7 +4887,7 @@ index bbfb9446..4c1c4b8d 100644
  	XrSystemProperties properties {XR_TYPE_SYSTEM_PROPERTIES};
  	xrGetSystemProperties(g.instance, g.system, &properties);
  	Log::WriteToConsoleAndLog(fmt::format("OpenXR: headset '{}' ready\n", properties.systemName));
-@@ -620,6 +959,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
+@@ -620,6 +960,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
  			out.push_back(name.c_str());
  		}
  	}
@@ -4308,7 +4916,7 @@ index bbfb9446..4c1c4b8d 100644
  }
  
  bool OpenXrPhysicalDevice(vk::Instance instance, vk::PhysicalDevice& out) {
-@@ -645,12 +1006,39 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -645,12 +1007,67 @@ void OpenXrStartSession(GraphicContext& graphics) {
  		return;
  	}
  	g.graphics = &graphics;
@@ -4330,6 +4938,34 @@ index bbfb9446..4c1c4b8d 100644
 +		g.eye.width = static_cast<uint32_t>(g.eye.width * scale) & ~15u;
 +		g.eye.height = static_cast<uint32_t>(g.eye.height * scale) & ~15u;
 +	}
++#if defined(_WIN32)
++    const auto* largeSetting = std::getenv("ASTROHYBRID_VR_LARGE_TARGETS");
++    const bool largeTargets = largeSetting && !strcmp(largeSetting,"1");
++    const char* quality = std::getenv("ASTROHYBRID_DLSS_QUALITY");
++    const char* sr = std::getenv("ASTROHYBRID_DLSS");
++    const bool scaledSr = sr && !strcmp(sr,"1") && quality &&
++        (!strcmp(quality,"performance") || !strcmp(quality,"balanced") || !strcmp(quality,"quality"));
++    const auto* requestedWidth = std::getenv("KYTY_VR_EYE_WIDTH");
++    const bool experimental6000 = largeTargets && requestedWidth && !strcmp(requestedWidth,"6000");
++    const uint64_t pixels = uint64_t(g.eye.width) * g.eye.height;
++    if (HeadsetProjectionEnabled() && std::getenv("KYTY_VR_EYE_WIDTH") &&
++        ((g.eye.width <= 3200 && pixels <= 3200ull*2944) ||
++         (largeTargets && g.eye.width <= 3520 && pixels <= 3520ull*3248) ||
++         (largeTargets && g.eye.width > 3520 && g.eye.width <= 4512 && pixels <= 4512ull*4160) ||
++         (largeTargets && scaledSr && g.eye.width > 4512 && g.eye.width <= 5184 && pixels <= 5184ull*4784) ||
++         (experimental6000 && g.eye.width <= 6000))) {
++        const char* dlss = std::getenv("ASTROHYBRID_DLSS");
++        const char* mode = std::getenv("ASTROHYBRID_DLSS_QUALITY");
++        double ratio = 1.0;
++        if (dlss && !strcmp(dlss,"1") && !(mode && !strcmp(mode,"dlaa"))) {
++            ratio = mode && !strcmp(mode,"performance") ? 0.5 :
++                    mode && !strcmp(mode,"balanced") ? 0.58 : 2.0/3;
++        }
++        bool applied = SetAstroEyeResolution(g.eye.width,g.eye.height,ratio,largeTargets);
++        Log::WriteToConsoleAndLog(fmt::format("Astro eye resolution: {} {}x{} (input scale {:.3f})\n",
++            applied ? "configured" : "unsupported executable for",g.eye.width,g.eye.height,ratio));
++    }
++#endif
 +    const char* side_option=std::getenv("KYTY_OPENXR_SIDE_QUEUE");
 +    g.side_queue=FlatCameraVrEnabled() && graphics.side_queue_index!=0 &&
 +                 !(side_option && side_option[0]=='0');
@@ -4349,7 +4985,7 @@ index bbfb9446..4c1c4b8d 100644
  	XrSessionCreateInfo info {XR_TYPE_SESSION_CREATE_INFO};
  	info.next     = &binding;
  	info.systemId = g.system;
-@@ -680,6 +1068,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -680,6 +1097,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
  	(void)graphics.device.allocateCommandBuffers(&allocate, &g.command);
  	vk::FenceCreateInfo fence {};
  	(void)graphics.device.createFence(&fence, nullptr, &g.fence);
@@ -4360,7 +4996,7 @@ index bbfb9446..4c1c4b8d 100644
  
  	g.running = true;
  	g.thread  = std::thread(ThreadMain);
-@@ -687,18 +1079,27 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -687,18 +1108,27 @@ void OpenXrStartSession(GraphicContext& graphics) {
  
  void OpenXrShutdown() {
  	g.running = false;
@@ -4390,7 +5026,7 @@ index bbfb9446..4c1c4b8d 100644
  		if (slot.image.image != nullptr) {
  			g.graphics->DeleteImage(slot.image);
  		}
-@@ -708,6 +1109,44 @@ void OpenXrShutdown() {
+@@ -708,6 +1138,44 @@ void OpenXrShutdown() {
  	g.graphics = nullptr;
  }
  
@@ -4435,7 +5071,7 @@ index bbfb9446..4c1c4b8d 100644
  VrPose OpenXrGetHeadPose() {
  	if (!g.running) {
  		return {};
-@@ -732,11 +1171,11 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+@@ -732,11 +1200,11 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
  		return;
  	}
  	std::lock_guard lock(g.mutex);
@@ -4451,7 +5087,7 @@ index bbfb9446..4c1c4b8d 100644
  	const auto vk_command = command.Handle();
  	Barrier(vk_command, slot.image.image, vk::ImageLayout::eUndefined,
  	        vk::ImageLayout::eTransferDstOptimal, 1, TRANSFER, TRANSFER_WRITE);
-@@ -747,16 +1186,161 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+@@ -747,16 +1215,161 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
  	blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
  	blit.dstOffsets[1]  = vk::Offset3D {static_cast<int32_t>(slot.image.extent.width),
  	                                    static_cast<int32_t>(slot.image.extent.height), 1};
@@ -4953,7 +5589,7 @@ index 53e94640..eae937e4 100644
  } // namespace Libs::Graphics
  
 diff --git a/src/graphics/presentation/window/swapchain.cpp b/src/graphics/presentation/window/swapchain.cpp
-index caa9055e..b9f6961c 100644
+index caa9055e..b10766e1 100644
 --- a/src/graphics/presentation/window/swapchain.cpp
 +++ b/src/graphics/presentation/window/swapchain.cpp
 @@ -14,6 +14,8 @@
@@ -4965,7 +5601,16 @@ index caa9055e..b9f6961c 100644
  #include "graphics/presentation/performanceOverlay.h"
  #include "graphics/presentation/presenter.h"
  #include "graphics/presentation/systemOverlay.h"
-@@ -38,6 +40,11 @@ namespace Libs::Graphics {
+@@ -27,6 +29,8 @@
+ #include <cstring>
+ #include <optional>
+ #include <limits>
++#include <fstream>
++#include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+ #include <memory>
+ #include <span>
+ #include <vector>
+@@ -38,6 +42,11 @@ namespace Libs::Graphics {
  
  struct Presenter::Frame {
  	VulkanImage   image;
@@ -4977,7 +5622,54 @@ index caa9055e..b9f6961c 100644
  	vk::ImageView view         = nullptr;
  	uint64_t      present_tick = 0;
  	bool          busy         = false;
-@@ -57,6 +64,11 @@ public:
+@@ -50,6 +59,46 @@ struct Presenter::Frame {
+ 	void Clear(CommandBuffer& command, const vk::ClearColorValue& color);
+ };
+ 
++// Optional one-shot capture of the actual stereo sources before OpenXR scaling.
++static void CaptureStereoSources(GraphicContext& graphics, CommandBuffer& cmd,
++                                 VulkanImage& left, VulkanImage& right, bool flat) {
++	static const char* prefix = std::getenv("ASTROHYBRID_VR_CAPTURE_STEREO");
++	if (!prefix || !*prefix || flat) return;
++	static unsigned tracked = 0;
++	if (++tracked != 520) return;
++	auto& scheduler = cmd.GetContext().GetCommandScheduler();
++	for (unsigned eye = 0; eye < 2; ++eye) {
++		auto& image = eye ? right : left;
++		const auto w = image.extent.width, h = image.extent.height;
++		const auto format = image.format;
++		const auto bytes = format == vk::Format::eR16G16B16A16Sfloat ? 8u : 4u;
++		if (bytes == 4 && format != vk::Format::eR8G8B8A8Unorm && format != vk::Format::eR8G8B8A8Srgb &&
++		    format != vk::Format::eB8G8R8A8Unorm && format != vk::Format::eB8G8R8A8Srgb &&
++		    format != vk::Format::eA2B10G10R10UnormPack32 && format != vk::Format::eA2R10G10B10UnormPack32) {
++			std::printf("Stereo capture unsupported format %d\n", int(format));
++			continue;
++		}
++		const auto size = uint64_t(w) * h * bytes;
++		auto dst = std::make_shared<Buffer>(graphics, scheduler, MemoryUsage::Download, 0,
++		                                    vk::BufferUsageFlagBits::eTransferDst, size);
++		vk::BufferImageCopy copy {};
++		copy.imageExtent = image.extent;
++		copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
++		const auto handle = cmd.Handle();
++		handle.copyImageToBuffer(image.image, vk::ImageLayout::eTransferSrcOptimal, dst->Handle(), 1, &copy);
++		vk::MemoryBarrier barrier {};
++		barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
++		barrier.dstAccessMask = vk::AccessFlagBits::eHostRead;
++		handle.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
++		                       {}, 1, &barrier, 0, nullptr, 0, nullptr);
++		scheduler.DeferOperation([dst, w, h, size, eye, format] {
++			dst->Invalidate(0, size);
++			std::ofstream file(fmt::format("{}-{}-{}x{}-{}.raw", prefix, eye, w, h, int(format)), std::ios::binary);
++			file.write(reinterpret_cast<const char*>(dst->Mapped().data()), size);
++		});
++	}
++}
++
+ class FramePool final {
+ public:
+ 	FramePool(WindowContext& window, CommandScheduler& scheduler)
+@@ -57,6 +106,11 @@ public:
  	~FramePool() {
  		m_scheduler.Wait(m_scheduler.CurrentTick() - 1);
  		for (auto& frame: m_frames) {
@@ -4989,7 +5681,7 @@ index caa9055e..b9f6961c 100644
  			m_window.graphic_ctx.device.destroyImageView(frame->view, nullptr);
  			if (frame->image.image != nullptr) {
  				m_window.graphic_ctx.DeleteImage(frame->image);
-@@ -127,6 +139,9 @@ public:
+@@ -127,6 +181,9 @@ public:
  		m_mutex.Unlock();
  
  		m_scheduler.Wait(frame->present_tick);
@@ -4999,7 +5691,7 @@ index caa9055e..b9f6961c 100644
  		return frame;
  	}
  
-@@ -354,7 +369,7 @@ struct Presenter::Impl {
+@@ -354,7 +411,7 @@ struct Presenter::Impl {
  		}
  	}
  
@@ -5008,7 +5700,7 @@ index caa9055e..b9f6961c 100644
  		TextureCache::ImageDesc desc {};
  		desc.info                  = info;
  		desc.view_info.format      = info.pixel_format;
-@@ -367,7 +382,7 @@ struct Presenter::Impl {
+@@ -367,7 +424,7 @@ struct Presenter::Impl {
  		desc.view_info.usage       = vk::ImageUsageFlagBits::eTransferSrc;
  		desc.type                  = TextureCache::BindingType::VideoOut;
  
@@ -5017,7 +5709,7 @@ index caa9055e..b9f6961c 100644
  		const auto image_id   = cache.FindImage(desc);
  		auto&      image      = cache.GetImage(image_id);
  		image.usage.video_out = true;
-@@ -1043,6 +1058,8 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
+@@ -1043,6 +1100,8 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
  
  void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
                                        const Presenter::Layer& overlay, bool draw_system_overlay) {
@@ -5026,7 +5718,7 @@ index caa9055e..b9f6961c 100644
  	EXIT_IF(m_image_index >= m_images.size());
  	auto       vk_command      = command.Handle();
  	const bool draw_overlay    = overlay.frame != nullptr;
-@@ -1052,7 +1069,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame*
+@@ -1052,7 +1111,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame*
  	const vk::Extent2D source_extent =
  	    source != nullptr ? vk::Extent2D {source->image.extent.width, source->image.extent.height}
  	                      : vk::Extent2D {};
@@ -5035,7 +5727,7 @@ index caa9055e..b9f6961c 100644
  	                      PresentNeedsFilter(source_extent, m_extent);
  	if (filtered) {
  		if (source->view == nullptr) {
-@@ -1106,19 +1123,26 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame*
+@@ -1106,19 +1165,26 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame*
  		region.srcSubresource.mipLevel       = 0;
  		region.srcSubresource.baseArrayLayer = 0;
  		region.srcSubresource.layerCount     = 1;
@@ -5069,7 +5761,7 @@ index caa9055e..b9f6961c 100644
  	} else {
  		const vk::ClearColorValue black {};
  		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
-@@ -1271,6 +1295,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
+@@ -1271,6 +1337,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
  	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
  	frame->hdr   = hdr;
  	frame->blank = false;
@@ -5077,7 +5769,7 @@ index caa9055e..b9f6961c 100644
  	RenderLockGuard   render_lock(m_impl->renderer.GetMutex());
  	auto&             image = m_impl->ResolveSurface(info);
  	if (image.backing.format == vk::Format::eUndefined) {
-@@ -1279,11 +1304,73 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
+@@ -1279,11 +1346,74 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
  	frame->Configure(m_impl->window.graphic_ctx,
  	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
  	frame->CopyFrom(buffer, image);
@@ -5119,6 +5811,7 @@ index caa9055e..b9f6961c 100644
 +			// startup or loading UI. Present it at one common binocular depth.
 +			metadata.flat_screen = Vr::HeadsetProjectionEnabled();
 +		}
++		CaptureStereoSources(graphics, buffer, frame->image, snapshot.image, metadata.flat_screen);
 +		const bool queued = Vr::OpenXrQueueStereoPair(buffer, frame->image, snapshot.image, metadata);
 +		static const bool mirror_pair = [] {
 +			const auto* value = std::getenv("KYTY_FLAT_STEREO_MIRROR");
@@ -5334,6 +6027,25 @@ index b8628fcd..68964130 100644
  		options.screen_width  = EnvironmentSize("KYTY_GPU_WIDTH", options.screen_width);
  		options.screen_height = EnvironmentSize("KYTY_GPU_HEIGHT", options.screen_height);
  		options.present_mode  = PresentModeFromEnvironment();
+diff --git a/src/kernel/memory.cpp b/src/kernel/memory.cpp
+index 6ea7c176..f2ef5812 100644
+--- a/src/kernel/memory.cpp
++++ b/src/kernel/memory.cpp
+@@ -950,7 +950,13 @@ public:
+ 
+ 	KYTY_CLASS_NO_COPY(PhysicalMemory);
+ 
+-	static constexpr uint64_t TotalSize() { return static_cast<uint64_t>(13824) * 1024 * 1024; }
++	static uint64_t TotalSize() {
++        static const uint64_t bytes = [] {
++            const char* large = std::getenv("ASTROHYBRID_VR_LARGE_TARGETS");
++            return uint64_t(large && !std::strcmp(large,"1") ? 17920 : 13824) * 1024 * 1024;
++        }();
++        return bytes;
++    }
+ 	static uint64_t           Size() {
+ 		EXIT_IF(g_flexible_memory_size >= TotalSize());
+ 		return TotalSize() - g_flexible_memory_size;
 diff --git a/src/libs/avPlayer.cpp b/src/libs/avPlayer.cpp
 index 9302f3e3..25171eb7 100644
 --- a/src/libs/avPlayer.cpp
@@ -5826,6 +6538,44 @@ index 1dd3379a..46f69704 100644
  void ResetInputState();
  int  GetActiveControllerId();
  // True when the player has a keyboard or gamepad assigned.
+diff --git a/tests/CpRecorderTests.cpp b/tests/CpRecorderTests.cpp
+index b23b0c73..42355f45 100644
+--- a/tests/CpRecorderTests.cpp
++++ b/tests/CpRecorderTests.cpp
+@@ -76,6 +76,9 @@ struct LogExecutor {
+ 	void DrainMarker(uint64_t serial) { Push(Op::DrainMarker, VerifyHash::DrainMarker(serial)); }
+ 	void EnterSite(const void*, const void*) { sites++; }
+ 	void LeaveSite() {}
++	void setCheckpointNV(const void* marker) {
++		Push(Op::SetCheckpoint, VerifyHash::Value(Op::SetCheckpoint, reinterpret_cast<uintptr_t>(marker)));
++	}
+ 
+ 	void beginRendering(const vk::RenderingInfo& info) {
+ 		Push(Op::BeginRendering, VerifyHash::BeginRendering(info));
+@@ -1017,11 +1020,12 @@ void TestWrapAndBackPressure() {
+ 	Check(ring.WritePosition() > 16u * ring.Capacity(), "back-pressure: the ring wrapped many times");
+ }
+ 
+-void TestThreadedStream() {
++void TestThreadedStream(uint32_t draw_wake_interval) {
+ 	// Default policies, a busy consumer and a producer of random commands.
+ 	Ring             ring(256u << 10u);
+ 	Encoder::Options options;
+ 	options.verify = true;
++	options.draw_wake_interval = draw_wake_interval;
+ 	Encoder     encoder(ring, options);
+ 	Generator   gen(99);
+ 	LogExecutor exec;
+@@ -1240,7 +1244,8 @@ int main(int argc, char** argv) {
+ 	TestRoundTrip(false);
+ 	TestRoundTrip(true);
+ 	TestWrapAndBackPressure();
+-	TestThreadedStream();
++	TestThreadedStream(1);
++	TestThreadedStream(12);
+ 	TestVerifyDetectsCorruption();
+ 	TestSites();
+ 	if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
 diff --git a/tests/ShaderProgramCacheTests.inc b/tests/ShaderProgramCacheTests.inc
 index aec59314..dd77d764 100644
 --- a/tests/ShaderProgramCacheTests.inc

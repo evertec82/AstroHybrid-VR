@@ -27,4 +27,6 @@ OFXR's original build scripts and dependency manifests are included in its sourc
 
 The Sky Aztec collision guard and VR HUD installer are included in this release. The headset layout uses five private copies of game files created during installation.
 
-The v0.1.2 renderer uses clang-cl 21, ThinLTO and the bundled stereo gameplay profile. Configure with `-DKYTY_EMULATOR_IPO=ON`, `-DASTROHYBRID_RENDERER_PROFILE=<absolute path to GPU/tools/pgo/astrohybrid-vr-clang21-stereo.profdata>` and `-DKYTY_CP_DIAGNOSTICS=OFF`. Build again with diagnostics ON for `kyty_gpu.diagnostics.dll`.
+The profile-optimized renderer uses clang-cl 21, ThinLTO and the bundled stereo gameplay profile. Configure with `-DKYTY_EMULATOR_IPO=ON`, `-DASTROHYBRID_RENDERER_PROFILE=<absolute path to GPU/tools/pgo/astrohybrid-vr-clang21-stereo.profdata>` and `-DKYTY_CP_DIAGNOSTICS=OFF`. Build again with diagnostics ON for `kyty_gpu.diagnostics.dll`.
+
+Build the optional kyty_gpu.dlss.dll with KYTY_NGX_SDK_DIR pointing to the NVIDIA NGX SDK. The runtime uses nvngx_dlss.dll supplied by AstroHybrid 1.2.1.
