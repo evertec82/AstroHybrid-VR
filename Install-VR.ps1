@@ -56,7 +56,8 @@ try {
         }
     }
 } finally {$stream.Dispose()}
-if($ValidateOnly){'Package, executable signatures and loader files verified. No changes made.';exit 0}
+& (Join-Path $PSScriptRoot 'Install-HudLayout.ps1') -RunDirectory $run -ValidateOnly
+if($ValidateOnly){'Package, executable signatures, HUD layouts and loader files verified.';exit 0}
 
 $candidate=Join-Path $run ($manifest.game.target_name+'.exe')
 $temporary=$candidate+'.vr-install.tmp'
@@ -94,5 +95,6 @@ New-Item -ItemType Directory -Path $xrDir,$vkDir -Force | Out-Null
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $xrDir 'openxr-ofxr.json') -Encoding Ascii
 @{file_format_version='1.2.0';layer=@{name='VK_LAYER_OFXRBridge_queue_serialize';type='GLOBAL';library_path=(Join-Path $fg 'ofxr\OFXR_vulkan_queue_layer.dll');api_version='1.3.296';implementation_version='983';description='AstroHybrid VR queue synchronization';functions=@{vkNegotiateLoaderLayerInterfaceVersion='OFXR_vkNegotiateLoaderLayerInterfaceVersion';vkGetInstanceProcAddr='OFXR_vkGetInstanceProcAddr';vkGetDeviceProcAddr='OFXR_vkGetDeviceProcAddr'}}} |
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $vkDir 'vulkan-ofxr.json') -Encoding Ascii
+& (Join-Path $PSScriptRoot 'Install-HudLayout.ps1') -RunDirectory $run
 Write-Output 'VR installation complete. Open Play AstroHybrid VR - Launcher.bat.'
 Write-Output "Original renderer backup: $backup"

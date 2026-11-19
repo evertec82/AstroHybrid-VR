@@ -90,6 +90,10 @@ function Start-Game($settings) {
     $start.Arguments='/d /c "Play AstroHybrid VR.bat"'
     $start.WorkingDirectory=$root; $start.UseShellExecute=$false; $start.CreateNoWindow=$true
     $environment=$start.EnvironmentVariables
+    # A full allocation census walks both driver and emulator data on the rendering thread.
+    if (!$environment.ContainsKey('KYTY_VRAM_STATS')) {
+        $environment['KYTY_VRAM_STATS'] = [string][int]$settings.VerboseLogging
+    }
     $environment['ASTROHYBRID_EXE']='AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard.exe'
     $environment['ASTROHYBRID_VR_HEADSET_PROJECTION']='1'
     $environment['KYTY_VR_EYE_WIDTH']="$($settings.ResolutionWidth)"
@@ -152,7 +156,7 @@ $logging=New-Object Windows.Forms.CheckBox; $logging.Text='Detailed diagnostics 
 $logging.SetBounds(25,380,500,27); $form.Controls.Add($logging)
 $skip=New-Object Windows.Forms.CheckBox; $skip.Text='Skip intro'; $skip.Checked=$settings.SkipIntro
 $skip.SetBounds(25,409,300,27); $form.Controls.Add($skip)
-$updateChoices={ $multiplier.Enabled=$generation.Checked; $quality.Enabled=$generation.Checked; $flow.Enabled=$generation.Checked; $overlay.Enabled=$generation.Checked; $logging.Enabled=$generation.Checked }
+$updateChoices={ $multiplier.Enabled=$generation.Checked; $quality.Enabled=$generation.Checked; $flow.Enabled=$generation.Checked; $overlay.Enabled=$generation.Checked }
 $generation.Add_CheckedChanged($updateChoices); & $updateChoices
 function Get-Selections {
     return [ordered]@{ResolutionWidth=[int]($resolution.SelectedItem -replace ' pixels',''); FrameGeneration=$generation.Checked; Multiplier=[int]($multiplier.SelectedItem -replace 'x',''); FlowQuality=[string]$quality.SelectedItem; FlowResolution=[int]($flow.SelectedItem -replace '%',''); Overlay=$overlay.Checked; VerboseLogging=$logging.Checked; SkipIntro=$skip.Checked}

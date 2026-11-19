@@ -1,18 +1,21 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index cca6f074..fa262581 100644
+index cca6f074..5bb109bd 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -754,6 +754,9 @@ add_executable(game_patch_filter_tests EXCLUDE_FROM_ALL
+@@ -754,6 +754,12 @@ add_executable(game_patch_filter_tests EXCLUDE_FROM_ALL
  )
  target_include_directories(game_patch_filter_tests PRIVATE ${inc_headers})
  
 +add_executable(frame_step_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FrameStepTests.cpp")
++add_executable(stereo_staging_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/StereoStagingTests.cpp")
++target_include_directories(stereo_staging_tests PRIVATE "${KYTY_SOURCE_DIR}")
++add_test(NAME stereo_staging_selection COMMAND stereo_staging_tests)
 +target_include_directories(frame_step_tests PRIVATE ${inc_headers})
 +
  # u59-preset.json (common/u59Preset.h): parsing and lookup for the launcher, the emulator's startup
  # warnings, the shipped tools/u59-preset.json, and the code defaults that make it optional.
  add_executable(u59_preset_tests EXCLUDE_FROM_ALL
-@@ -1253,6 +1256,7 @@ if(BUILD_TESTING)
+@@ -1253,6 +1259,7 @@ if(BUILD_TESTING)
  	set_tests_properties(guest_probe_retire guest_probe_shared guest_probe_equals PROPERTIES TIMEOUT 60)
  	add_test(NAME lod_stats_report COMMAND $<TARGET_FILE:lod_stats_report_tests>)
  	add_test(NAME game_patch_filter COMMAND $<TARGET_FILE:game_patch_filter_tests>)
@@ -20,7 +23,7 @@ index cca6f074..fa262581 100644
  	add_test(NAME u59_preset COMMAND $<TARGET_FILE:u59_preset_tests>)
  	add_test(NAME shader_codegen
  	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --codegen-only)
-@@ -2541,7 +2545,18 @@ if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+@@ -2541,7 +2548,18 @@ if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
  	endif()
  endif()
  
@@ -40,7 +43,7 @@ index cca6f074..fa262581 100644
  configure_macos_guest_address_space(kyty_emulator)
  
  option(KYTY_EMULATOR_IPO "Enable release interprocedural optimization for the emulator target" OFF)
-@@ -2614,7 +2629,7 @@ set(KYTY_EMULATOR_PDB_LINK_PATH "${CMAKE_CURRENT_BINARY_DIR}/kyty_emulator.pdb")
+@@ -2614,7 +2632,7 @@ set(KYTY_EMULATOR_PDB_LINK_PATH "${CMAKE_CURRENT_BINARY_DIR}/kyty_emulator.pdb")
  
  if(KYTY_CLANG_CL)
  	target_link_options(kyty_emulator PRIVATE
@@ -80,8 +83,20 @@ index 00000000..349e4839
 +	uint64_t last_ns = 0;
 +};
 +} // namespace Common
+diff --git a/src/graphics/guest_gpu/command_processor/commandProcessor.h b/src/graphics/guest_gpu/command_processor/commandProcessor.h
+index 799f5bd3..22d1731c 100644
+--- a/src/graphics/guest_gpu/command_processor/commandProcessor.h
++++ b/src/graphics/guest_gpu/command_processor/commandProcessor.h
+@@ -249,6 +249,7 @@ public:
+ 	// GuestGpu, before any submission: the graphics processor's front moves to the sequencer's
+ 	// thread. Creates the draw-prep engine (its producer is then the sequencer).
+ 	void AttachSequencer(CpSeq::Sequencer* sequencer);
++	void StopDrawPreparation() { m_draw_prep.reset(); }
+ 	[[nodiscard]] bool Sequenced() const noexcept { return m_sequencer != nullptr; }
+ 	// Resolver (GPU thread): executes the ops of graphics submission `submission` (admission
+ 	// sequence) until its end (Complete), a suspended op, a slice yield, or an empty op ring
 diff --git a/src/graphics/guest_gpu/graphicsRun.cpp b/src/graphics/guest_gpu/graphicsRun.cpp
-index 6ad75d88..6da11184 100644
+index 6ad75d88..09faf427 100644
 --- a/src/graphics/guest_gpu/graphicsRun.cpp
 +++ b/src/graphics/guest_gpu/graphicsRun.cpp
 @@ -40,6 +40,7 @@
@@ -92,7 +107,17 @@ index 6ad75d88..6da11184 100644
  #include "graphics/presentation/window.h"
  #include "graphics/shader/recompiler/CodegenOptions.h"
  #include "graphics/shader/shader.h"
-@@ -1305,6 +1306,13 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
+@@ -291,6 +292,9 @@ void GuestGpu::Shutdown() {
+ 	// No completion-runner call may reach this object once it is destroyed.
+ 	m_renderer.GetCommandScheduler().SetProgressHook(nullptr, nullptr);
+ 	m_renderer.GetCommandScheduler().DrainPriorityOperations();
++	// Workers may still hold speculative slots referencing the secondary eye's caches.
++	// Join them before RenderContext tears down either eye.
++	m_gfx_cp->StopDrawPreparation();
+ 	m_shutdown_complete = true;
+ }
+ 
+@@ -1305,6 +1309,13 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
  		        ? cache.TryWriteDataGpu(address, src + (dw_num - 1u), sizeof(uint32_t))
  		        : cache.TryWriteDataGpu(address, src, uint64_t {dw_num} * sizeof(uint32_t));
  		if (written) {
@@ -106,7 +131,7 @@ index 6ad75d88..6da11184 100644
  			if (g_gpu_state != nullptr) {
  				g_gpu_state->DropCpVisibleLabels(
  				    address, write_one_address ? sizeof(uint32_t) : uint64_t {dw_num} * sizeof(uint32_t));
-@@ -1465,6 +1473,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
+@@ -1465,6 +1476,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
  		if (dst_gds) {
  			trace_gds(dst_address_or_offset, src_address_or_offset_or_immediate & 0xffffffffu, 0);
  		}
@@ -118,7 +143,7 @@ index 6ad75d88..6da11184 100644
  		buffer_cache.FillBuffer(
  		    dst_address_or_offset, num_bytes,
  		    static_cast<uint32_t>(src_address_or_offset_or_immediate & 0xffffffffu), dst_gds);
-@@ -1482,6 +1495,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
+@@ -1482,6 +1498,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
  	} else if (src_gds) {
  		trace_gds(src_address_or_offset_or_immediate, dst_address_or_offset, 2);
  	}
@@ -130,7 +155,7 @@ index 6ad75d88..6da11184 100644
  	buffer_cache.CopyBuffer(dst_address_or_offset, src_address_or_offset_or_immediate, num_bytes,
  	                        dst_gds, src_gds);
  }
-@@ -2556,6 +2574,10 @@ void CommandProcessor::ExecDrawIndex(const CpSeq::DrawIndexOp& op) {
+@@ -2556,6 +2577,10 @@ void CommandProcessor::ExecDrawIndex(const CpSeq::DrawIndexOp& op) {
  		(void)RepeatTrace::TakeDrawPacket();
  		RepeatTrace::OnUnpreparedDraw();
  	}
@@ -141,7 +166,7 @@ index 6ad75d88..6da11184 100644
  	m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
  	MaybeFlushIdleGpu();
  	MaybeYieldSlice();
-@@ -2691,7 +2713,15 @@ bool CommandProcessor::TryDrawIndirectNative(DrawIndirectSource source) {
+@@ -2691,7 +2716,15 @@ bool CommandProcessor::TryDrawIndirectNative(DrawIndirectSource source) {
  		}
  	}
  
@@ -157,7 +182,7 @@ index 6ad75d88..6da11184 100644
  		Profiler::CountFrameEvent(Profiler::FrameEvent::DrawIndirectFallback);
  		return false;
  	}
-@@ -3080,6 +3110,11 @@ void CommandProcessor::ExecDispatchDirect(const CpSeq::DispatchDirectOp& op) {
+@@ -3080,6 +3113,11 @@ void CommandProcessor::ExecDispatchDirect(const CpSeq::DispatchDirectOp& op) {
  			RepeatTrace::OnDispatch(static_cast<uint32_t>(m_interrupt_event_id), shaders.GetCs(),
  			                        thread_group_x, thread_group_y, thread_group_z, mode);
  		}
@@ -169,7 +194,7 @@ index 6ad75d88..6da11184 100644
  		m_renderer.GetRenderExecutor().DispatchDirect(m_submit_id, command, thread_group_x,
  		                                              thread_group_y, thread_group_z, mode,
  		                                              IsAsyncComputeQueue());
-@@ -3140,6 +3175,11 @@ void CommandProcessor::ExecDispatchIndirect(const CpSeq::DispatchIndirectOp& op)
+@@ -3140,6 +3178,11 @@ void CommandProcessor::ExecDispatchIndirect(const CpSeq::DispatchIndirectOp& op)
  		ExecDispatchDirect(direct);
  		return;
  	}
@@ -181,7 +206,7 @@ index 6ad75d88..6da11184 100644
  	m_renderer.GetRenderExecutor().DispatchIndirect(m_submit_id, CurrentBuffer(), op.args_addr,
  	                                                op.mode, IsAsyncComputeQueue());
  	MaybeFlushIdleGpu();
-@@ -3217,6 +3257,10 @@ void CommandProcessor::ExecDrawAuto(const CpSeq::DrawAutoOp& op) {
+@@ -3217,6 +3260,10 @@ void CommandProcessor::ExecDrawAuto(const CpSeq::DrawAutoOp& op) {
  		(void)RepeatTrace::TakeDrawPacket();
  		RepeatTrace::OnUnpreparedDraw();
  	}
@@ -192,7 +217,7 @@ index 6ad75d88..6da11184 100644
  	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
  	MaybeFlushIdleGpu();
  	MaybeYieldSlice();
-@@ -3983,6 +4027,13 @@ void CommandProcessor::ExecEndOfPipe(const CpSeq::EndOfPipeOp& op) {
+@@ -3983,6 +4030,13 @@ void CommandProcessor::ExecEndOfPipe(const CpSeq::EndOfPipeOp& op) {
  }
  
  void CommandProcessor::EmitGlobalBarrier() {
@@ -207,7 +232,7 @@ index 6ad75d88..6da11184 100644
  	KYTY_PROFILER_DETAIL_FUNCTION();
  	RenderLockGuard lock(m_renderer.GetMutex());
 diff --git a/src/graphics/host_gpu/graphicContext.h b/src/graphics/host_gpu/graphicContext.h
-index ed299289..f0a901d8 100644
+index ed299289..2208adbf 100644
 --- a/src/graphics/host_gpu/graphicContext.h
 +++ b/src/graphics/host_gpu/graphicContext.h
 @@ -136,11 +136,16 @@ struct GraphicContext {
@@ -238,7 +263,19 @@ index ed299289..f0a901d8 100644
  	// An allocation failed for lack of device memory: destroys what is only retained for reuse
  	// (the native image pool) before the caller retries. Returns the bytes released.
  	uint64_t               ReleaseRetainedMemory();
-@@ -297,6 +305,8 @@ private:
+@@ -261,7 +269,10 @@ struct GraphicContext {
+ 	// because sampled views span non-resident levels) access the levels being bound.
+ 	[[nodiscard]] bool     CreateSparseImage(const vk::ImageCreateInfo& info, uint32_t first_level,
+ 	                                         VulkanImage& image);
+-	void                   BindSparseImageLevels(VulkanImage& image, uint32_t first_level,
++	// Out of video memory, the bind retries after releasing retained images and then in any memory
++	// type the image allows (KYTY_IMAGE_SYSMEM_FALLBACK). False when no memory was found: nothing
++	// was bound and the image keeps its current levels.
++	bool                   BindSparseImageLevels(VulkanImage& image, uint32_t first_level,
+ 	                                             vk::Semaphore wait_semaphore = nullptr,
+ 	                                             uint64_t      wait_value     = 0);
+ 	// The timeline semaphore image binds signal, and the newest value signalled by a bind that may
+@@ -297,6 +308,8 @@ private:
  	std::vector<RetiredNativeImage> m_retired_images;
  	uint64_t m_retired_image_bytes = 0;
  	std::chrono::steady_clock::time_point m_retired_trim_next {};
@@ -247,6 +284,16 @@ index ed299289..f0a901d8 100644
  	mutable std::mutex                                 m_format_properties_mutex;
  	mutable std::map<vk::Format, vk::FormatProperties> m_format_properties;
  	mutable std::mutex                                 m_image_format_properties_mutex;
+@@ -345,6 +358,9 @@ struct VulkanImage {
+ 		uint64_t                   block_size       = 0;
+ 		uint32_t                   memory_type_bits = 0;
+ 		uint64_t                   bytes            = 0;
++		// No memory could be found for a later bind (video and system memory full): the image keeps
++		// the levels it has and no further bind is tried for it.
++		bool                       bind_failed      = false;
+ 		std::vector<VmaAllocation> allocations;
+ 	};
+ 	std::unique_ptr<SparseState> sparse;
 diff --git a/src/graphics/host_gpu/memoryTracker.h b/src/graphics/host_gpu/memoryTracker.h
 index 05910a66..a0d589f5 100644
 --- a/src/graphics/host_gpu/memoryTracker.h
@@ -345,7 +392,7 @@ index 137906f1..196eb6ce 100644
  
  } // namespace Libs::Graphics
 diff --git a/src/graphics/host_gpu/renderer/cache/bufferCache.cpp b/src/graphics/host_gpu/renderer/cache/bufferCache.cpp
-index 13dabc7b..7b6f38c0 100644
+index 13dabc7b..f3536df3 100644
 --- a/src/graphics/host_gpu/renderer/cache/bufferCache.cpp
 +++ b/src/graphics/host_gpu/renderer/cache/bufferCache.cpp
 @@ -1,4 +1,7 @@
@@ -356,7 +403,22 @@ index 13dabc7b..7b6f38c0 100644
  
  #include "common/alignment.h"
  #include "common/assert.h"
-@@ -1625,6 +1628,16 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size, bool write_fau
+@@ -1607,6 +1610,14 @@ BufferCache::~BufferCache() {
+ 		m_scheduler.SetSubmitDependency(nullptr, 1);
+ 	}
+ 	CompleteAllSideReadbacks();
++	if (m_scheduler.Context().IsStereoEyeContext()) {
++		// At shutdown the secondary scheduler and preparation workers have drained.
++		// These ranges describe private eye buffers. Only the primary publishes guest bytes.
++		m_gpu_modified_ranges.ForEach([this](uint64_t first, uint64_t end) {
++			m_memory_tracker.UnmarkRegionAsGpuModified(first, end - first);
++		});
++		m_gpu_modified_ranges.Clear();
++	}
+ 	if (!m_gpu_modified_ranges.Empty()) {
+ 		EXIT("BufferCache: destroyed with pending GPU-modified ranges\n");
+ 	}
+@@ -1625,6 +1636,16 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size, bool write_fau
  		EXIT("BufferCache: invalid memory-invalidation range\n");
  	}
  	ForgetKnownFills(vaddr, size);
@@ -373,7 +435,7 @@ index 13dabc7b..7b6f38c0 100644
  	const auto flush = [this, vaddr, size] { ReadMemory(vaddr, size, true); };
  	if (!write_fault) {
  		m_memory_tracker.InvalidateRegion(vaddr, size, flush);
-@@ -1636,9 +1649,23 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size, bool write_fau
+@@ -1636,9 +1657,23 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size, bool write_fau
  	};
  	// Pages fault-ahead opens take writes without faulting: forget their fills first, exactly as
  	// for the faulting range (never GPU-dirty pages, so fills of GPU-owned ranges survive).
@@ -398,7 +460,7 @@ index 13dabc7b..7b6f38c0 100644
  }
  
  BufferCache::UploadBatch::UploadBatch(BufferCache& cache): m_cache(cache) {
-@@ -1910,6 +1937,10 @@ private:
+@@ -1910,6 +1945,10 @@ private:
  } // namespace
  
  void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool retried_write) {
@@ -409,7 +471,7 @@ index 13dabc7b..7b6f38c0 100644
  	std::optional<ReadFaultDiagScope> diag;
  	if (ReadFaultDiag::Covers(vaddr, size) && !is_write && !GuestGpu::IsGpuThread()) {
  		diag.emplace(vaddr, m_scheduler.GetMasterSemaphore());
-@@ -3691,6 +3722,54 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t
+@@ -3691,6 +3730,54 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t
  	if (command.IsInvalid() || !GuestRange {vaddr, size}.Valid()) {
  		EXIT("BufferCache: buffer request requires a recording command buffer\n");
  	}
@@ -421,23 +483,23 @@ index 13dabc7b..7b6f38c0 100644
 +        !IsRegionGpuModified(vaddr, size)) {
 +        std::array<float, 144> camera{};
 +        if (Libs::LibKernel::Memory::TryReadBacking(vaddr, camera.data(), size)) {
-+            const float angle = camera_yaw * 0.017453292519943295f;
-+            const float c = std::cos(angle), s = std::sin(angle);
-+            const Vr::CameraMatrix rotation = Vr::FlatCameraVrEnabled()
-+                ? Vr::CameraTrackingRotation()
-+                : Vr::CameraMatrix{c,0,s,0, 0,1,0,0, -s,0,c,0, 0,0,0,1};
-+            const auto previous_rotation = Vr::SameFrameStereoEnabled()
-+                ? Vr::CameraTrackingPreviousRotation() : rotation;
 +            bool transformed = false;
-+            if (Vr::SameFrameStereoEnabled()) {
-+                static thread_local Vr::CameraUploadMemo memo;
-+                const auto& result = memo.Prepare(Vr::camera_frame.load(), Vr::CameraRenderEye(),
-+                    camera, Vr::CameraTrackingHeadTransform(), Vr::camera_frame_pose,
-+                    rotation, previous_rotation);
-+                if (result.paired) Vr::active_stereo_frame = result.paired;
-+                camera = result.camera;
-+                transformed = result.transformed;
++            if (Vr::FlatCameraVrEnabled()) {
++                const auto& tracking = Vr::CameraTrackingTransforms();
++                if (Vr::SameFrameStereoEnabled()) {
++                    static thread_local Vr::CameraUploadMemo memo;
++                    const auto& result = memo.Prepare(tracking.frame, Vr::CameraRenderEye(),
++                        camera, tracking.head, Vr::camera_frame_pose, tracking.current, tracking.previous);
++                    if (result.paired) Vr::active_stereo_frame = *result.paired;
++                    camera = result.camera;
++                    transformed = result.transformed;
++                } else {
++                    transformed = Vr::RotateCameraBlock(camera, tracking.current);
++                }
 +            } else {
++                const float angle = camera_yaw * 0.017453292519943295f;
++                const float c = std::cos(angle), s = std::sin(angle);
++                const Vr::CameraMatrix rotation{c,0,s,0, 0,1,0,0, -s,0,c,0, 0,0,0,1};
 +                transformed = Vr::RotateCameraBlock(camera, rotation);
 +            }
 +            if (transformed) {
@@ -464,7 +526,23 @@ index 13dabc7b..7b6f38c0 100644
  	if (!is_written && !is_texel_buffer && m_binding_memo != nullptr && size < BindingMemoMaxSize &&
  	    GuestGpu::IsGpuThread()) {
  		return ObtainReadBinding(vaddr, size, id);
-@@ -6133,6 +6212,9 @@ void BufferCache::SettleBdaWrittenRange(uint64_t vaddr, uint64_t size, uint64_t
+@@ -3909,10 +3996,11 @@ void BufferCache::PrintWrittenEpochSummary() {
+ 	totals.printed_ns = now;
+ }
+ 
+-void BufferCache::PrefetchReadBinding(uint64_t vaddr, uint64_t size, bool at_find) const noexcept {
+-	if (m_binding_memo == nullptr || g_binding_batch_prefetch.Get() != (at_find ? 2 : 1)) {
+-		return;
+-	}
++bool BufferCache::PrefetchReadBindingsAt(bool at_find) const noexcept {
++	return m_binding_memo != nullptr && g_binding_batch_prefetch.Get() == (at_find ? 2 : 1);
++}
++
++void BufferCache::PrefetchReadBinding(uint64_t vaddr, uint64_t size) const noexcept {
+ 	const auto* slot =
+ 	    &m_binding_memo[static_cast<size_t>(BindingMemoHash(vaddr, size) >> m_binding_memo_shift)];
+ #if defined(__clang__) || defined(__GNUC__)
+@@ -6133,6 +6221,9 @@ void BufferCache::SettleBdaWrittenRange(uint64_t vaddr, uint64_t size, uint64_t
  
  uint32_t BufferCache::ApplyBdaStoreLog(std::span<const FaultManager::BdaStore> stores,
                                         uint64_t shader_hash) {
@@ -474,10 +552,84 @@ index 13dabc7b..7b6f38c0 100644
  	// The guest-write transition once per dword run, before any byte lands.
  	RangeSet dwords;
  	for (const auto& store: stores) {
+diff --git a/src/graphics/host_gpu/renderer/cache/bufferCache.h b/src/graphics/host_gpu/renderer/cache/bufferCache.h
+index 6c2192a7..2b03867b 100644
+--- a/src/graphics/host_gpu/renderer/cache/bufferCache.h
++++ b/src/graphics/host_gpu/renderer/cache/bufferCache.h
+@@ -165,8 +165,9 @@ public:
+ 	// changes: every key, signature, epoch and guard check of the lookup still runs.
+ 	// KYTY_CP_BINDING_BATCH_PREFETCH=find: the hints are issued earlier, by RenderExecutor::
+ 	// FindBuffers for each read binding it discovers (before the stages' image work), instead of a
+-	// separate pass in RebindBuffers. `at_find` says which caller asks.
+-	void PrefetchReadBinding(uint64_t vaddr, uint64_t size, bool at_find = false) const noexcept;
++	// separate pass in RebindBuffers. Sample the mode once before each stage's loop.
++	[[nodiscard]] bool PrefetchReadBindingsAt(bool at_find) const noexcept;
++	void PrefetchReadBinding(uint64_t vaddr, uint64_t size) const noexcept;
+ 	// A writable binding whose shader can only write `written` (sub-ranges of [vaddr, vaddr +
+ 	// size), e.g. from a write-range proof): the whole range is synchronized as for any binding,
+ 	// but only `written` becomes GPU-owned (dirty, protected, write-ticked).
 diff --git a/src/graphics/host_gpu/renderer/cache/textureCache.cpp b/src/graphics/host_gpu/renderer/cache/textureCache.cpp
-index aa95affc..a8310ef8 100644
+index aa95affc..4371e373 100644
 --- a/src/graphics/host_gpu/renderer/cache/textureCache.cpp
 +++ b/src/graphics/host_gpu/renderer/cache/textureCache.cpp
+@@ -834,13 +834,12 @@ uint64_t TextureCache::ResidentPrefixSize(const ImageInfo& info, uint32_t first_
+ 	return end;
+ }
+ 
+-void TextureCache::BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_level) {
++bool TextureCache::BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_level) {
+ 	auto&          master   = m_scheduler.GetMasterSemaphore();
+ 	const auto     current  = m_scheduler.CurrentTick();
+ 	const uint64_t previous = current > 1 ? current - 1 : 0;
+ 	if (previous == 0 || master.KnownGpuTick() >= previous) {
+-		m_graphics.BindSparseImageLevels(image.backing, first_level); // nothing in flight
+-		return;
++		return m_graphics.BindSparseImageLevels(image.backing, first_level); // nothing in flight
+ 	}
+ 	// The GPU wait must never precede its signal (queueSubmission.h): hand every older tick to the
+ 	// driver first, as BufferCache's side readbacks do (KYTY_CP_RECORDER ring, submission broker).
+@@ -851,7 +850,7 @@ void TextureCache::BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_l
+ 		Common::LockGuard lock(m_graphics.queue_mutex);
+ 		m_graphics.submission_queue.DrainThroughLocked(progress.get(), previous);
+ 	}
+-	m_graphics.BindSparseImageLevels(image.backing, first_level, master.Handle(), previous);
++	return m_graphics.BindSparseImageLevels(image.backing, first_level, master.Handle(), previous);
+ }
+ 
+ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampling) {
+@@ -862,6 +861,16 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
+ 	++m_lookup_side_effects;
+ 	const auto prefix    = ResidentPrefixSize(image.info, first_level);
+ 	const auto new_first = prefix != 0 ? first_level : 0u;
++	if (image.backing.sparse) {
++		// KYTY_TEXTURE_SPARSE_RESIDENCY: memory behind the newly resident levels; their refresh
++		// follows (MarkResidencyDirty). Submitted ticks may still access these levels: Image::
++		// GetBarriers transitions the whole chain, because sampled views span non-resident levels
++		// and need them in the view's layout. Vulkan forbids such accesses while the binding
++		// changes on another queue (Bug A), so the bind waits on the GPU for every tick before the
++		// current recording, and the current one waits for the bind (CommandScheduler::Submit).
++		// Keep the old resident range and upload bounds when no compatible heap has room.
++		if (image.backing.sparse->bind_failed || !BindSparseLevelsAfterSubmitted(image, new_first)) return;
++	}
+ 	// The registered range grows. For everything keyed on the page owner index (clean-page
+ 	// proofs, lookups, binding identity caches) this is an unregister and a register.
+ 	const bool registered = image.registered;
+@@ -873,15 +882,6 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
+ 	NoteImageStateChange();
+ 	image.live = new_first != 0 ? GuestRange {image.info.data.address, prefix} : image.info.data;
+ 	NoteImageStateChange();
+-	if (image.backing.sparse) {
+-		// KYTY_TEXTURE_SPARSE_RESIDENCY: memory behind the newly resident levels; their refresh
+-		// follows (MarkResidencyDirty). Submitted ticks may still access these levels: Image::
+-		// GetBarriers transitions the whole chain, because sampled views span non-resident levels
+-		// and need them in the view's layout. Vulkan forbids such accesses while the binding
+-		// changes on another queue (Bug A), so the bind waits on the GPU for every tick before the
+-		// current recording, and the current one waits for the bind (CommandScheduler::Submit).
+-		BindSparseLevelsAfterSubmitted(image, new_first);
+-	}
+ 	if (registered) {
+ 		RegisterImage(id);
+ 	}
 @@ -6006,6 +6006,9 @@ void TextureCache::NotePendingWritebackCpuWrite(uint64_t address, uint64_t size)
  
  void TextureCache::WriteBackImageBytes(GuestRange range, const uint8_t* data,
@@ -488,6 +640,19 @@ index aa95affc..a8310ef8 100644
  	if (pending == nullptr) {
  		LibKernel::Memory::WriteBacking(range.address, data, range.size);
  		return;
+diff --git a/src/graphics/host_gpu/renderer/cache/textureCache.h b/src/graphics/host_gpu/renderer/cache/textureCache.h
+index 3ca9f640..ab81233f 100644
+--- a/src/graphics/host_gpu/renderer/cache/textureCache.h
++++ b/src/graphics/host_gpu/renderer/cache/textureCache.h
+@@ -302,7 +302,7 @@ private:
+ 	// `sampling`: requested by a sampled view (counted as an extension, else a fallback).
+ 	void                      EnsureResidency(ImageId id, uint32_t first_level, bool sampling);
+ 	// KYTY_TEXTURE_SPARSE_RESIDENCY growth: the bind ordered after every submitted tick (Bug A).
+-	void                      BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_level);
++	bool                      BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_level);
+ 	// Whole chain resident and refreshed now, before a non-sampling use records anything.
+ 	void                      RequireFullResidency(ImageId id);
+ 	void                      PoisonNonResidentLevels(Image& image);
 diff --git a/src/graphics/host_gpu/renderer/cache/uploadDma.cpp b/src/graphics/host_gpu/renderer/cache/uploadDma.cpp
 index cbc17076..67490937 100644
 --- a/src/graphics/host_gpu/renderer/cache/uploadDma.cpp
@@ -1061,10 +1226,155 @@ index f508e87b..e4f88417 100644
  			break;
  		}
 diff --git a/src/graphics/host_gpu/renderer/context.cpp b/src/graphics/host_gpu/renderer/context.cpp
-index cb883de2..1b058d27 100644
+index cb883de2..219e3bc8 100644
 --- a/src/graphics/host_gpu/renderer/context.cpp
 +++ b/src/graphics/host_gpu/renderer/context.cpp
-@@ -924,7 +924,12 @@ void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0,
+@@ -22,6 +22,7 @@
+ 
+ #include <algorithm>
+ #include <bit>
++#include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+ 
+@@ -34,6 +35,68 @@
+ 
+ namespace Libs::Graphics {
+ 
++namespace VulkanCallTiming {
++Live::Switch enabled("KYTY_VK_CALL_TIMING", Live::ParseDefaultOff);
++thread_local std::array<Counts, static_cast<unsigned>(Op::Count)> counts {};
++
++thread_local uint64_t omitted_writes = 0;
++
++void ReportIfDue(Clock::time_point now) {
++	static thread_local auto start = now;
++	if (now - start < std::chrono::seconds(5)) return;
++	constexpr std::array names {"vertex", "index", "pushDesc", "updateSet", "bindSet", "pushConst",
++	                            "pipeline", "draw", "drawIndexed", "drawMesh"};
++	static_assert(names.size() == static_cast<unsigned>(Op::Count));
++	std::string line = fmt::format("Vulkan CPU calls {:.2f}s (issued/skipped/samples/mean_ns):",
++	                               std::chrono::duration<double>(now - start).count());
++	for (size_t i = 0; i < counts.size(); ++i) {
++		const auto& v = counts[i];
++		if (v.calls || v.skipped)
++			line += fmt::format(" {}={}/{}/{}/{}", names[i], v.calls, v.skipped, v.samples,
++			                    v.samples ? v.ns / v.samples : 0);
++	}
++	std::fprintf(stderr, "%s prefix_writes_skipped=%llu\n", line.c_str(), static_cast<unsigned long long>(omitted_writes));
++	omitted_writes = 0;
++	counts = {};
++	start = now;
++}
++} // namespace VulkanCallTiming
++
++static Live::Switch g_descriptor_prefix("KYTY_DESCRIPTOR_PREFIX_REUSE", Live::ParseDefaultOn);
++static Live::Switch g_input_bindings("KYTY_INPUT_BIND_REUSE", Live::ParseDefaultOn);
++
++bool CommandBuffer::ReusesIndex(vk::Buffer buffer, vk::DeviceSize offset, vk::IndexType type) const {
++	if (!g_input_bindings.On()) {
++		m_input.index = nullptr;
++		return false;
++	}
++	if (buffer && m_input.index == buffer && m_input.index_offset == offset && m_input.index_type == type)
++		return true;
++	m_input.index = buffer;
++	m_input.index_offset = offset;
++	m_input.index_type = type;
++	return false;
++}
++
++bool CommandBuffer::ReusesVertices(uint32_t first, uint32_t count, const vk::Buffer* buffers,
++                                   const vk::DeviceSize* offsets, const vk::DeviceSize* sizes,
++                                   const vk::DeviceSize* strides) const {
++	// Only the bounded, zero-based form emitted by guest draws. Any other form invalidates it.
++	if (!g_input_bindings.On() || first || !count || !sizes || strides || count > m_input.buffers.size()) {
++		m_input.valid_prefix = 0;
++		return false;
++	}
++	if (count <= m_input.valid_prefix &&
++	    std::equal(buffers, buffers + count, m_input.buffers.begin()) &&
++	    std::equal(offsets, offsets + count, m_input.offsets.begin()) &&
++	    std::equal(sizes, sizes + count, m_input.sizes.begin())) return true;
++	std::copy_n(buffers, count, m_input.buffers.begin());
++	std::copy_n(offsets, count, m_input.offsets.begin());
++	std::copy_n(sizes, count, m_input.sizes.begin());
++	m_input.valid_prefix = count;
++	return false;
++}
++
+ // KYTY_CP_SINK_ROUTES (default 1, live): CommandBuffer::HelperSink() encodes for the recorder; 0
+ // drains it and records natively, as the helpers' former Handle() did.
+ static Live::Switch g_sink_routes("KYTY_CP_SINK_ROUTES", Live::ParseDefaultOn);
+@@ -254,6 +317,7 @@ bool CommandBuffer::IsInvalid() const {
+ }
+ 
+ vk::CommandBuffer CommandBuffer::Handle() const {
++	ForgetInputBindings();
+ 	EXIT_IF(IsInvalid());
+ 	if (m_internal_recording == 0 && BarrierBatchEnabled()) {
+ 		// The caller may record anything through the returned handle.
+@@ -271,6 +335,7 @@ vk::CommandBuffer CommandBuffer::Handle() const {
+ }
+ 
+ vk::CommandBuffer CommandBuffer::StateHandle() const {
++	ForgetInputBindings();
+ 	EXIT_IF(IsInvalid());
+ 	if (Encoding()) {
+ 		OpenDirectWindow(KYTY_RECORDER_CALLER());
+@@ -699,6 +764,7 @@ void CommandBuffer::NoteDrawRecorded() const {
+ }
+ 
+ void CommandBuffer::Begin() {
++	ForgetInputBindings();
+ 	EXIT_IF(m_rendering || IsInvalid());
+ 	m_bound_pipelines = {};
+ 	for (auto& state: m_descriptor_states) {
+@@ -813,7 +879,8 @@ void CommandBuffer::PushConstants(vk::PipelineLayout layout, vk::ShaderStageFlag
+ 
+ int32_t CommandBuffer::PushDescriptors(vk::PipelineBindPoint point, vk::PipelineLayout layout,
+                                        uint32_t set, uint32_t count,
+-                                       const vk::WriteDescriptorSet* writes, bool known_miss) {
++                                       const vk::WriteDescriptorSet* writes, bool known_miss,
++                                       bool disjoint_writes) {
+ 	auto& state = m_descriptor_states[BindingPointIndex(point)];
+ 	if (known_miss) {
+ 		// The comparison below could only miss. No copy is kept for the next update either: one
+@@ -823,6 +890,7 @@ int32_t CommandBuffer::PushDescriptors(vk::PipelineBindPoint point, vk::Pipeline
+ 		Profiler::CountFrameEvent(Profiler::FrameEvent::DescriptorPushes);
+ 		state.layout    = nullptr;
+ 		state.bound_set = nullptr;
++		m_descriptor_epochs[BindingPointIndex(point)]++;
+ 		return PushMissFresh;
+ 	}
+ 	bool supported = Common::RendererBatchEnabled() && set == 0;
+@@ -870,15 +938,24 @@ int32_t CommandBuffer::PushDescriptors(vk::PipelineBindPoint point, vk::Pipeline
+ 		}
+ 	}
+ 	if (result == PushAvoided) {
++		VulkanCallTiming::Skipped(VulkanCallTiming::Op::PushDescriptors);
+ 		Profiler::CountFrameEvent(Profiler::FrameEvent::DescriptorPushesAvoided);
+ 		return result;
+ 	}
+-	StateSink().pushDescriptorSetKHR(point, layout, set, count, writes);
++	// CommitBindings emits each binding at most once, entirely within that binding.
++	// Both pushes must have that property: an overlapping earlier push could otherwise
++	// have overwritten an equal prefix. The suffix starts with the first differing write.
++	const uint32_t prefix = result > 0 && disjoint_writes && state.disjoint_writes && g_descriptor_prefix.On()
++	                            ? static_cast<uint32_t>(result) : 0;
++	if (VulkanCallTiming::enabled.On())
++		VulkanCallTiming::omitted_writes += prefix;
++	StateSink().pushDescriptorSetKHR(point, layout, set, count - prefix, prefix ? writes + prefix : writes);
+ 	m_descriptor_epochs[BindingPointIndex(point)]++;
+ 	Profiler::CountFrameEvent(Profiler::FrameEvent::DescriptorPushes);
+ 	state.layout    = nullptr;
+ 	state.bound_set = nullptr;
+ 	if (!supported) return result;
++	state.disjoint_writes = disjoint_writes;
+ 	state.writes.assign(writes, writes + count);
+ 	state.buffers.clear();
+ 	state.images.clear();
+@@ -924,7 +1001,12 @@ void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0,
  		if (m_graphics.diagnostic_checkpoints_enabled) {
  			const auto* marker = RecordDiagnosticCheckpoint(checkpoint);
  			if (marker != nullptr) {
@@ -1079,10 +1389,94 @@ index cb883de2..1b058d27 100644
  		}
  		if (breadcrumbs) {
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp b/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
-index 45a7df72..378a68b4 100644
+index 45a7df72..1cfda621 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
 +++ b/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
-@@ -638,6 +638,43 @@ void ComputeBindingPlan(const BindingPlanContext& context, const RegisterSnapsho
+@@ -181,7 +181,7 @@ bool PlanSamplers(SamplerCache& cache, const CompiledShaderInfo& program,
+ // ResolveTexture's memo hashes; with `memo` (P4b-2) also the tags of the entries that hold the
+ // keys now (TextureBindingMemo::FindHint), valid in `stage.texture_tags_valid`.
+ bool PlanTextureHashes(const CompiledShaderInfo& program, const ResourceSnapshot& resources,
+-                       const TextureBindingMemo* memo, StagePlan& stage) {
++                       const TextureBindingMemo* memo, StagePlan& stage, bool reuse_hashes = false) {
+ 	const auto count = program.info.images.size();
+ 	if (resources.images.size() < count) {
+ 		return false;
+@@ -197,7 +197,7 @@ bool PlanTextureHashes(const CompiledShaderInfo& program, const ResourceSnapshot
+ 			return false;
+ 		}
+ 		const auto key          = TextureBindingMemo::MakeKey(program.info.images[i], descriptor.fields);
+-		stage.texture_hashes[i] = TextureBindingMemo::Hash(key);
++		if (!reuse_hashes) stage.texture_hashes[i] = TextureBindingMemo::Hash(key);
+ 		uint64_t tag            = 0;
+ 		if (memo != nullptr && memo->FindHint(key, stage.texture_hashes[i], tag)) {
+ 			stage.texture_tags[i] = tag;
+@@ -295,28 +295,19 @@ uint32_t IndexElementSize(uint32_t index_type_and_size) {
+ 	return 0;
+ }
+ 
+-void PlanPipeline(const BindingPlanContext& context, const RegisterSnapshot& registers,
+-                  const DrawIndexArgs* index_args, const PreparedDraw& prepared,
+-	              BindingPlan& plan, bool prefetch_only = false) {
+-	using E = Profiler::FrameEvent;
+-	// Rare (a pipeline not created yet, the map lock busy): shared totals are fine here.
+-	const auto abstain = [prefetch_only](E event) {
+-		if (prefetch_only) return;
+-		Profiler::CountFrameEvent(event);
+-		(event == E::DrawPrepBindingAbstainPipelineBusy ? g_binding_totals.pipeline_busy
+-		                                                : g_binding_totals.pipeline_abstains)
+-		    .fetch_add(1, std::memory_order_relaxed);
+-	};
+-	const auto& ctx   = registers.context;
+-	const auto& ucfg  = registers.user_config;
++bool PredictPipelineInputs(const BindingPlanContext& context, const RegisterSnapshot& registers,
++                           const DrawIndexArgs* index_args, const PreparedDraw& prepared,
++                           BindingPlan& plan) {
++	const auto& ctx = registers.context;
++	const auto& ucfg = registers.user_config;
+ 	if (!DrawTopology(ucfg, plan.topology)) {
+-		return abstain(E::DrawPrepBindingAbstainPipeline);
++		return false;
+ 	}
+ 	plan.primitive_restart = false;
+ 	if (index_args != nullptr) {
+ 		const auto element_size = IndexElementSize(index_args->index_type_and_size);
+ 		if (element_size == 0) {
+-			return abstain(E::DrawPrepBindingAbstainPipeline);
++			return false;
+ 		}
+ 		const bool allow_custom = MeshPrimitiveRestartEnabled() &&
+ 		                          prepared.vertex_info.stage.program->stage == ShaderType::Mesh;
+@@ -324,10 +315,27 @@ void PlanPipeline(const BindingPlanContext& context, const RegisterSnapshot& reg
+ 			case RestartDecision::Disabled: break;
+ 			case RestartDecision::Enabled: plan.primitive_restart = true; break;
+ 			case RestartDecision::Scan:
+-			case RestartDecision::Unsupported: return abstain(E::DrawPrepBindingAbstainPipeline);
++			case RestartDecision::Unsupported: return false;
+ 		}
+ 	}
+-	if (!PredictTargets(*context.graphics, ctx, prepared, plan.targets)) {
++	return PredictTargets(*context.graphics, ctx, prepared, plan.targets);
++}
++
++void PlanPipeline(const BindingPlanContext& context, const RegisterSnapshot& registers,
++                  const DrawIndexArgs* index_args, const PreparedDraw& prepared,
++	              BindingPlan& plan, bool prefetch_only = false, bool inputs_ready = false) {
++	using E = Profiler::FrameEvent;
++	// Rare (a pipeline not created yet, the map lock busy): shared totals are fine here.
++	const auto abstain = [prefetch_only](E event) {
++		if (prefetch_only) return;
++		Profiler::CountFrameEvent(event);
++		(event == E::DrawPrepBindingAbstainPipelineBusy ? g_binding_totals.pipeline_busy
++		                                                : g_binding_totals.pipeline_abstains)
++		    .fetch_add(1, std::memory_order_relaxed);
++	};
++	const auto& ctx   = registers.context;
++	const auto& ucfg  = registers.user_config;
++	if (!inputs_ready && !PredictPipelineInputs(context, registers, index_args, prepared, plan)) {
+ 		return abstain(E::DrawPrepBindingAbstainPipeline);
+ 	}
+ 	auto programs = prepared.programs;
+@@ -638,6 +646,50 @@ void ComputeBindingPlan(const BindingPlanContext& context, const RegisterSnapsho
  	Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepBindingPlans);
  }
  
@@ -1109,7 +1503,9 @@ index 45a7df72..378a68b4 100644
 +		}
 +		if (BindingPartEnabled(plan.parts, BindingPart::TextureMemo) &&
 +		    context.texture_memo != nullptr && TextureBindingMemo::Enabled()) {
-+			stage.texture_hashes_valid = PlanTextureHashes(program, data, context.texture_memo, stage);
++			// The two contexts share the immutable guest descriptor snapshot. Only memo tags are eye-local.
++			const bool reuse_hashes = stage.texture_hashes_valid && stage.texture_hashes.size() == program.info.images.size();
++			stage.texture_hashes_valid = PlanTextureHashes(program, data, context.texture_memo, stage, reuse_hashes);
 +			stage.texture_tags_valid &= stage.texture_hashes_valid;
 +		}
 +	};
@@ -1118,7 +1514,12 @@ index 45a7df72..378a68b4 100644
 +		local_stage(*prepared.pixel_info.stage.program, prepared.pixel_prep.resources, plan.pixel);
 +	}
 +	if (BindingPartEnabled(plan.parts, BindingPart::Pipeline)) {
-+		PlanPipeline(context, registers, index_args, prepared, plan);
++		// Both plans use the same register snapshot and graphics device. A primary hit
++		// proves topology, primitive restart and attachment formats were fully predicted.
++		// The secondary still looks up its own pipeline and validates its actual targets.
++		static Live::Switch reuse_inputs("KYTY_STEREO_PIPELINE_INPUTS", Live::ParseDefaultOn);
++		PlanPipeline(context, registers, index_args, prepared, plan, false,
++		             shared.pipeline != nullptr && reuse_inputs.On());
 +	}
 +	Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepBindingPlans);
 +}
@@ -1201,7 +1602,7 @@ index 5b6c0a8e..88bd6e62 100644
  void NoteRecorded(const DrawShape& shape);
  void EndDraw();
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp
-index 8ec061a6..27e5cd48 100644
+index 8ec061a6..c54570c4 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp
 +++ b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.cpp
 @@ -27,6 +27,7 @@
@@ -1212,15 +1613,16 @@ index 8ec061a6..27e5cd48 100644
  #include "graphics/shader/shader.h"
  #include "graphics/shader/shaderCompiler.h"
  #include "kernel/memory.h"
-@@ -313,6 +314,7 @@ static bool ReadsUntouched(const PreparedDraw& prepared);
+@@ -313,6 +314,8 @@ static bool ReadsUntouched(const PreparedDraw& prepared);
  void Prepare(PipelineCache& pipeline_cache, const RegisterSnapshot& registers, bool eligible,
               bool exact, PreparedDraw& prepared) {
  	prepared.program_compile_ns = 0;
 +	prepared.stereo_preps_ready = false;
++	prepared.borrow_stereo_inputs = false;
  	prepared.ok         = false;
  	prepared.failure    = Failure::None;
  	prepared.programs   = {};
-@@ -1002,6 +1004,7 @@ struct Engine::Slot {
+@@ -1002,6 +1005,7 @@ struct Engine::Slot {
  	// published with it by Complete; used at commit only if Validate accepts `prepared`. Reset
  	// after every commit.
  	BindingPlan      plan;
@@ -1228,7 +1630,7 @@ index 8ec061a6..27e5cd48 100644
  	bool             eligible        = false; // DrawReachesPrograms, decided at submission
  	bool             worker_prepared = false;
  	// P3b diagnostics: the first draw the sequencer published after one of its stops
-@@ -1058,20 +1061,46 @@ void HashForRepeatTrace(Engine::Slot& slot) {
+@@ -1058,20 +1062,50 @@ void HashForRepeatTrace(Engine::Slot& slot) {
  }
  
  // After Prepare, on the preparing thread (KYTY_DRAW_PREP_BINDINGS): the slot's binding plan.
@@ -1236,6 +1638,7 @@ index 8ec061a6..27e5cd48 100644
 +static Live::Switch g_stereo_binding_prep("KYTY_STEREO_PREP_BINDINGS", Live::ParseDefaultOn);
 +static Live::Switch g_stereo_register_borrow("KYTY_STEREO_REGISTER_BORROW", Live::ParseDefaultOn);
 +static Live::Switch g_stereo_shared_plan("KYTY_STEREO_SHARED_PLAN", Live::ParseDefaultOn);
++static Live::Switch g_stereo_shared_inputs("KYTY_STEREO_SHARED_INPUTS", Live::ParseDefaultOff);
 +
 +void PlanBindings(Engine::Slot& slot, const BindingPlanContext& context,
 +                  const BindingPlanContext* stereo_context = nullptr) {
@@ -1244,9 +1647,12 @@ index 8ec061a6..27e5cd48 100644
  		return;
  	}
 +	if (stereo_context != nullptr && g_stereo_binding_prep.On() && slot.prepared.ok) {
-+		slot.prepared.stereo_vertex_prep = slot.prepared.vertex_prep;
-+		if (slot.prepared.pixel_active) slot.prepared.stereo_pixel_prep = slot.prepared.pixel_prep;
-+		slot.prepared.stereo_preps_ready = true;
++		slot.prepared.borrow_stereo_inputs = g_stereo_shared_inputs.On();
++		if (!slot.prepared.borrow_stereo_inputs) {
++			slot.prepared.stereo_vertex_prep = slot.prepared.vertex_prep;
++			if (slot.prepared.pixel_active) slot.prepared.stereo_pixel_prep = slot.prepared.pixel_prep;
++			slot.prepared.stereo_preps_ready = true;
++		}
 +	}
  	if (context.pipelines->PipelinePrefetchEnabled()) {
  		PrefetchBindingPipeline(context, slot.registers,
@@ -1276,7 +1682,7 @@ index 8ec061a6..27e5cd48 100644
  }
  
  // A slot's preparation: a draw's programs (Prepare) or a dispatch's (PrepareDispatch).
-@@ -1188,7 +1217,7 @@ struct Engine::Workers {
+@@ -1188,7 +1222,7 @@ struct Engine::Workers {
  		PrepareSlot(pipeline_cache, slot, false);
  		HashForRepeatTrace(slot);
  		Phases::Mark(Phases::Phase::RunKey);
@@ -1285,7 +1691,7 @@ index 8ec061a6..27e5cd48 100644
  		Phases::Mark(Phases::Phase::Plan);
  		slot.worker_prepared = true;
  		window.Complete(seq);
-@@ -1216,6 +1245,7 @@ struct Engine::Workers {
+@@ -1216,6 +1250,7 @@ struct Engine::Workers {
  
  	PipelineCache&           pipeline_cache;
  	BindingPlanContext       plan_context; // set by the engine before the first Submit
@@ -1293,7 +1699,7 @@ index 8ec061a6..27e5cd48 100644
  	Window<Slot>             window;
  	uint64_t                 spin_ns      = 0;
  	uint64_t                 cold_spin_ns = 0;
-@@ -1260,6 +1290,9 @@ Engine::Engine(RenderContext& renderer, std::function<void()> service_commands,
+@@ -1260,6 +1295,9 @@ Engine::Engine(RenderContext& renderer, std::function<void()> service_commands,
  		                                      uint64_t {spin_us} * 1000u, hot, wake_backlog,
  		                                      uint64_t {cold_spin_us} * 1000u, steal, cold_token);
  		m_workers->plan_context = MakeBindingPlanContext(m_renderer);
@@ -1303,7 +1709,7 @@ index 8ec061a6..27e5cd48 100644
  		LOGF("DrawPrep: parallel mode, window=%u workers=%u spin=%uus hot=%u wake_backlog=%u "
  		     "cold_spin=%uus cold_token=%d steal=%u steal_after=%uus cert=%s verify=%d\n",
  		     m_workers->window.Capacity(), workers, spin_us, m_workers->gate.HotCount(),
-@@ -1321,7 +1354,10 @@ bool Engine::Submit(uint64_t submit_id, const DrawIndexArgs* index_args,
+@@ -1321,7 +1359,10 @@ bool Engine::Submit(uint64_t submit_id, const DrawIndexArgs* index_args,
  		Prepare(m_renderer.GetPipelineCache(), slot.registers, slot.eligible, true, slot.prepared);
  		m_renderer.GetPipelineCache().NoteProgramPrefetchWait(slot.prepared.program_compile_ns);
  		HashForRepeatTrace(slot);
@@ -1315,13 +1721,13 @@ index 8ec061a6..27e5cd48 100644
  		Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepSelfPrepared);
  		Commit(slot);
  		return true;
-@@ -1807,6 +1843,54 @@ void Engine::Commit(Slot& slot) {
+@@ -1807,6 +1848,55 @@ void Engine::Commit(Slot& slot) {
  	const auto previous  = scheduler.BindRegisters(slot.registers.context,
  	                                               slot.registers.user_config,
  	                                               slot.registers.shaders);
 +	if (auto* eye = m_renderer.GetStereoEyeContext()) {
 +		// Share guest preparation, with independent worker-prepared native binding plans.
-+		// The secondary consumes its isolated metadata before the primary swaps its own.
++		// The secondary finishes reading the slot before the primary takes ownership.
 +		// Each eye validates the certificate and falls back when it is stale.
 +		Vr::CameraEyeScope eye_scope(1);
 +		auto& eye_scheduler = eye->GetCommandScheduler();
@@ -1353,6 +1759,7 @@ index 8ec061a6..27e5cd48 100644
 +			eye_executor.DrawAuto(slot.submit_id, eye_buffer, slot.auto_args);
 +		}
 +		eye_executor.m_prepared_draw = nullptr;
++		if (slot.prepared.borrow_stereo_inputs) eye_executor.ReleaseBorrowedShaderInputs(slot.prepared);
 +		eye_executor.m_prepared_draw_borrowed = false;
 +		eye_executor.m_in_engine_commit = false;
 +		eye_executor.m_run_key = 0;
@@ -1371,10 +1778,10 @@ index 8ec061a6..27e5cd48 100644
  	// KYTY_DRAW_PREP_BINDINGS: the slot's plan, which RefreshShaders activates once Validate
  	// accepted the preparation it was computed from.
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h
-index d34b4520..86fde64d 100644
+index d34b4520..3dbf17eb 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h
 +++ b/src/graphics/host_gpu/renderer/drawPrep/drawPrep.h
-@@ -153,6 +153,11 @@ struct PreparedDraw {
+@@ -153,6 +153,12 @@ struct PreparedDraw {
  	ShaderPixelInputInfo                                pixel_info;
  	PipelineCache::StagePrep                            vertex_prep;
  	PipelineCache::StagePrep                            pixel_prep;
@@ -1383,6 +1790,7 @@ index d34b4520..86fde64d 100644
 +	PipelineCache::StagePrep                            stereo_vertex_prep;
 +	PipelineCache::StagePrep                            stereo_pixel_prep;
 +	bool                                                stereo_preps_ready = false;
++	bool                                                borrow_stereo_inputs = false;
  	ReadSet                                             reads;
  	uint64_t                                            coherence_generation  = 0;
  	uint64_t                                            shader_map_generation = 0;
@@ -1444,10 +1852,57 @@ index c243b20e..6dbd4bd5 100644
  		if (line_width != width) {
  			line_width             = width;
 diff --git a/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp b/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp
-index e7fa0596..ce983418 100644
+index e7fa0596..1769dd53 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp
 +++ b/src/graphics/host_gpu/renderer/pipeline/descriptors.cpp
-@@ -2243,6 +2243,9 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+@@ -78,6 +78,7 @@ namespace Libs::Graphics {
+ namespace {
+ 
+ using BindingKind = ShaderRecompiler::IR::DescriptorBindingKind;
++static Live::Switch g_direct_descriptor_build("KYTY_DIRECT_DESCRIPTOR_BUILD", Live::ParseDefaultOn);
+ 
+ } // namespace
+ 
+@@ -1860,6 +1861,7 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
+ 		OwnedCounters::Add(DrawPrep::GetBindingTotals().ranges_used, 1);
+ 	}
+ 	const bool verify = use_plan && DrawPrep::BindingsVerifyMode() != 0;
++	const bool prefetch = cache.PrefetchReadBindingsAt(true);
+ 	const auto& graphics = m_context.GetGraphics();
+ 	const uint64_t unbounded_read_limit = std::min<uint64_t>(
+ 	    uint64_t {256} * 1024 * 1024,
+@@ -1942,9 +1944,9 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
+ 			// decode the V# here, so the plan and serial ranges above stay as they are.
+ 			size = unbounded_read_limit;
+ 		}
+-		if (const auto& resource = program.info.buffers[i]; !resource.written && !resource.formatted) {
++		if (const auto& resource = program.info.buffers[i]; prefetch && !resource.written && !resource.formatted) {
+ 			// KYTY_CP_BINDING_BATCH_PREFETCH=find (BufferCache::PrefetchReadBinding).
+-			cache.PrefetchReadBinding(address, size, true);
++			cache.PrefetchReadBinding(address, size);
+ 		}
+ 		BufferLookupStats::PartScope find_scope(BufferLookupStats::Part::FindCall);
+ 		prepared.buffer_sources.push_back({address, size, cache.FindBuffer(address, size)});
+@@ -2232,28 +2234,40 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+ 	// KYTY_CP_BINDING_BATCH_PREFETCH: the memo slots of every read binding first, so their cache
+ 	// misses overlap (a hint only; the lookups below are unchanged).
+ 	BufferLookupStats::PartScope prefetch_scope(BufferLookupStats::Part::Prefetch);
+-	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
+-		const auto& source   = prepared.buffer_sources[i];
+-		const auto& resource = program.info.buffers[i];
+-		if (source.address != 0 && source.size != 0 && !resource.written && !resource.formatted) {
+-			m_context.GetBufferCache().PrefetchReadBinding(source.address, source.size);
++	auto& buffer_cache = m_context.GetBufferCache();
++	if (buffer_cache.PrefetchReadBindingsAt(false)) {
++		for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
++			const auto& source   = prepared.buffer_sources[i];
++			const auto& resource = program.info.buffers[i];
++			if (source.address != 0 && source.size != 0 && !resource.written && !resource.formatted) {
++				buffer_cache.PrefetchReadBinding(source.address, source.size);
++			}
+ 		}
+ 	}
+ 	prefetch_scope.Stop();
  	CommitStats::StepMark(CommitStats::Step::RbHead);
  	const auto* uniform_binding = ShaderRecompiler::IR::FindBinding(
  	    program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::UniformBuffers);
@@ -1457,7 +1912,12 @@ index e7fa0596..ce983418 100644
  	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
  		uint32_t   buffer_offset = 0;
  		const auto ranges_start  = program.info.buffers[i].written ? BufferLookupStats::Now() : 0;
-@@ -2252,8 +2255,13 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
+-		const auto* written      = ResolveWrittenRanges(m_context, *prepared.runtime, prepared, i,
+-		                                                write_ranges_evaluated, write_scratch);
++		const auto* written = program.info.buffers[i].written
++		    ? ResolveWrittenRanges(m_context, *prepared.runtime, prepared, i, write_ranges_evaluated, write_scratch)
++		    : nullptr;
+ 		if (ranges_start != 0) {
  			BufferLookupStats::AddPart(BufferLookupStats::Part::WriteRanges,
  			                           BufferLookupStats::Now() - ranges_start);
  		}
@@ -1473,7 +1933,55 @@ index e7fa0596..ce983418 100644
  		prepared.buffers.push_back(NativeStorageBuffer(m_context, prepared.buffer_sources[i],
  		                                               program.info.buffers[i], program.stage, i,
  		                                               buffer_offset, written, uniform_view));
-@@ -2857,9 +2865,8 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+@@ -2812,39 +2826,15 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 	// this command buffer only as the batch target (identity; KYTY_CP_RECORDER records nothing
+ 	// through it).
+ 	const auto vk_buffer    = buffer.Identity();
+-	size_t descriptor_count = 0;
+-	size_t write_count      = 0;
+ 	ShaderRecompiler::IR::PushData push_data;
+ 	bool                           has_push_data = false;
+-	constexpr auto                 GraphicsStages =
+-	    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eMeshEXT |
+-	    vk::ShaderStageFlagBits::eTessellationControl |
+-	    vk::ShaderStageFlagBits::eTessellationEvaluation | vk::ShaderStageFlagBits::eFragment;
+-	vk::ShaderStageFlags push_stages = pipeline_bind_point == vk::PipelineBindPoint::eGraphics
+-	                                       ? vk::ShaderStageFlagBits::eFragment
+-	                                       : vk::ShaderStageFlags {};
+-	bool mesh_stage = false;
+-	for (const auto* prepared: prepared_bindings) {
+-		EXIT_IF(prepared == nullptr || prepared->runtime == nullptr || !*prepared->runtime);
+-		const auto& program = *prepared->runtime->program;
+-		mesh_stage |= program.stage == ShaderType::Mesh;
+-		write_count += program.bindings.descriptors.size();
+-		for (const auto& binding: program.bindings.descriptors) {
+-			descriptor_count += NativeDescriptorCount(binding);
+-		}
+-		const auto shader_stage = NativeShaderStage(program.stage);
+-		push_stages |= shader_stage;
+-		EXIT_IF((pipeline_bind_point == vk::PipelineBindPoint::eGraphics &&
+-		         (shader_stage & GraphicsStages) == vk::ShaderStageFlags {}) ||
+-		        (pipeline_bind_point == vk::PipelineBindPoint::eCompute &&
+-		         shader_stage != vk::ShaderStageFlagBits::eCompute));
+-	}
++	// Reserve before storing pointers into these arrays. The pipeline owns the layout counts.
+ 	m_descriptor_buffers.clear();
+ 	m_descriptor_images.clear();
+ 	m_descriptor_writes.clear();
+-	m_descriptor_buffers.reserve(descriptor_count);
+-	m_descriptor_images.reserve(descriptor_count);
+-	m_descriptor_writes.reserve(write_count);
++	m_descriptor_buffers.reserve(pipeline.descriptor_elements);
++	m_descriptor_images.reserve(pipeline.descriptor_elements);
++	m_descriptor_writes.reserve(pipeline.descriptor_writes);
+ 	// KYTY_DRAW_RUN_PUSH: a continuation pushes only its per-draw descriptors; its image and sampler
+ 	// descriptors are the previous draw's, still in effect (RenderExecutor::DrawRunPartialPush).
+ 	const bool partial = keep_images && pipeline_bind_point == vk::PipelineBindPoint::eGraphics &&
+@@ -2854,12 +2844,12 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 	}
+ 	CommitStats::StepMark(CommitStats::Step::CbHead);
+ 
++	const bool direct_build = g_direct_descriptor_build.On();
  	for (auto* prepared: prepared_bindings) {
  		const auto& program       = *prepared->runtime->program;
  		auto&       descriptors   = *prepared;
@@ -1484,8 +1992,115 @@ index e7fa0596..ce983418 100644
  			KYTY_GPU_OP_SITE("descriptors.gds_barrier");
  			const auto barrier = MakeGdsDependency(descriptors.gds.buffer);
  			constexpr auto source_stages =
+@@ -2949,7 +2939,14 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 		transitions_scope.Stop();
+ 		CommitStats::StepMark(CommitStats::Step::CbTransitions);
+ 		const CommitStats::SubScope build_scope(CommitStats::Sub::DescBuild);
+-		m_image_occurrences.assign(descriptors.images.size(), 0);
++		const bool single_views = direct_build && program.single_image_views;
++		if (!partial) {
++			if (single_views) {
++				EXIT_IF(descriptors.images.size() != program.info.images.size());
++			} else {
++				m_image_occurrences.assign(descriptors.images.size(), 0);
++			}
++		}
+ 		for (const auto& binding: program.bindings.descriptors) {
+ 			if (partial && (binding.kind == BindingKind::Samplers ||
+ 			                ShaderRecompiler::IR::ImageBindingResourceClass(binding.kind) !=
+@@ -2965,12 +2962,28 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 			if (ShaderRecompiler::IR::ImageBindingResourceClass(binding.kind) !=
+ 			    ShaderRecompiler::IR::ImageResourceClass::None) {
+ 				for (const auto resource: binding.resources) {
+-					m_descriptor_images.push_back(MakeImageInfo(
+-					    descriptors.images.at(resource), m_image_occurrences.at(resource)++));
++					const auto& image = descriptors.images.at(resource);
++					if (single_views) {
++						EXIT_IF(image.mip_views.size() > 1);
++						m_descriptor_images.push_back(MakeImageInfo(image, 0));
++					} else {
++						m_descriptor_images.push_back(MakeImageInfo(image, m_image_occurrences.at(resource)++));
++					}
+ 				}
+ 			} else {
+ 				switch (binding.kind) {
+ 					case BindingKind::Buffers:
++						if (direct_build && program.dense_storage_buffers) {
++							const auto first = binding.resources.front();
++							const auto count = binding.resources.size();
++							EXIT_IF(first > descriptors.buffers.size() || count > descriptors.buffers.size() - first);
++							const auto views = std::span(descriptors.buffers).subspan(first, count);
++							for (const auto& view: views) {
++								EXIT_IF(view.buffer == nullptr);
++							}
++							write.pBufferInfo = views.data();
++							break;
++						}
+ 						for (const auto resource: binding.resources) {
+ 							const auto& view = descriptors.buffers.at(resource);
+ 							EXIT_IF(view.buffer == nullptr);
+@@ -3023,7 +3036,11 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 							view = &descriptors.shared_memory;
+ 						}
+ 						EXIT_IF(view->buffer == nullptr);
+-						m_descriptor_buffers.push_back(*view);
++						if (direct_build) {
++							write.pBufferInfo = view;
++						} else {
++							m_descriptor_buffers.push_back(*view);
++						}
+ 						break;
+ 					}
+ 					case BindingKind::Samplers:
+@@ -3045,7 +3062,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 			}
+ 			m_descriptor_writes.push_back(write);
+ 		}
+-		for (uint32_t i = 0; !partial && i < descriptors.images.size(); i++) {
++		for (uint32_t i = 0; !partial && !single_views && i < descriptors.images.size(); i++) {
+ 			const auto expected =
+ 			    descriptors.images[i].mip_views.empty()
+ 			        ? 1u
+@@ -3065,14 +3082,14 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 
+ 	if (has_push_data) {
+ 		const CommitStats::SubScope push_scope(CommitStats::Sub::PushConst);
+-		buffer.PushConstants(pipeline.pipeline_layout, push_stages, sizeof(push_data),
++		buffer.PushConstants(pipeline.pipeline_layout, pipeline.push_stages, sizeof(push_data),
+ 		                     push_data.dwords.data());
+ 	}
+ 	if (pipeline_bind_point == vk::PipelineBindPoint::eGraphics) {
+ 		CommitStats::AddItems(CommitStats::Item::DescWrites, m_descriptor_writes.size());
+ 	}
+ 	CommitStats::StepMark(CommitStats::Step::CbPushConst);
+-	if (mesh_stage) {
++	if (pipeline.push_stages & vk::ShaderStageFlagBits::eMeshEXT) {
+ 		// The mesh draw path then records its draw arguments over the first push-constant dwords
+ 		// through StateHandle(); the shadow no longer describes what is in effect.
+ 		buffer.InvalidatePushConstants();
+@@ -3120,7 +3137,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
+ 			const auto result = buffer.PushDescriptors(
+ 			    pipeline_bind_point, pipeline.pipeline_layout, 0,
+ 			    static_cast<uint32_t>(m_descriptor_writes.size()), m_descriptor_writes.data(),
+-			    known_miss);
++			    known_miss, true);
+ 			CountDescriptorPushMiss(result, m_descriptor_writes);
+ 		} else {
+ 			const CommitStats::SubScope desc_scope(CommitStats::Sub::DescSet);
+@@ -3224,8 +3241,9 @@ void RenderExecutor::CommitDescriptorSet(CommandBuffer& buffer, vk::PipelineBind
+ 			buffer.StateSink().updateDescriptorSets(m_context.GetGraphics().device, set, count,
+ 			                                        m_descriptor_writes.data());
+ 		} else {
+-			m_context.GetGraphics().device.updateDescriptorSets(count, m_descriptor_writes.data(),
+-			                                                    0, nullptr);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::UpdateSet, [&] {
++				m_context.GetGraphics().device.updateDescriptorSets(count, m_descriptor_writes.data(), 0, nullptr);
++			});
+ 		}
+ 		Profiler::CountFrameEvent(Profiler::FrameEvent::DescriptorSetsWritten);
+ 		if (lookup) {
 diff --git a/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp b/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp
-index e1cf54f2..293e7c92 100644
+index e1cf54f2..94147f8b 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp
 +++ b/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp
 @@ -1738,6 +1738,7 @@ struct PipelineCache::ProgramCache {
@@ -1547,7 +2162,90 @@ index e1cf54f2..293e7c92 100644
  	std::atomic<uint64_t> speculative_programs {0};
  	// Compiles in progress outside the lock and their completion signal (m_programs_mutex).
  	std::vector<InFlightCompile*> in_flight;
-@@ -5394,6 +5403,7 @@ void PipelineCache::InitializeKnownPipelines() {
+@@ -4464,6 +4473,7 @@ struct PipelineCache::PrefetchState {
+ 		uint64_t compile_ns = 0;
+ 		// Keyed builds (the skip builder): the content identity, journaled when it is published.
+ 		GraphicsContent content;
++		FastFirstState::GraphicsFast fast;
+ 	};
+ 	struct Pending {
+ 		std::future<Result> future;
+@@ -4486,14 +4496,18 @@ struct PipelineCache::PrefetchState {
+ 			if (!job.started->load(std::memory_order_acquire)) continue; // dropped by Stop
+ 			Result result = job.future.get();
+ 			if (result.pipeline == nullptr) continue;
+-			cache.m_graphics.device.destroyPipeline(result.pipeline->pipeline, nullptr);
+-			ReleasePipelineLayout(cache.m_graphics, result.pipeline->pipeline_layout,
+-			                      result.pipeline->descriptor_set_layout);
++			Discard(result);
+ 		}
+ 		PipelineCacheLog("{}: submitted {}, used {}, unused {}; worker compile {} ms, "
+ 		                 "CP wait {} ms (worst {} ms)", log_name, submitted.load(), used.load(), pending.size(),
+ 		                 compile_ns.load() / 1000000, wait_ns.load() / 1000000, max_wait_ns.load() / 1000000);
+ 	}
++	void Discard(Result& result) {
++		if (result.fast.snapshot) cache.m_fast_first->scheduler.Release();
++		cache.m_graphics.device.destroyPipeline(result.pipeline->pipeline, nullptr);
++		ReleasePipelineLayout(cache.m_graphics, result.pipeline->pipeline_layout,
++		                      result.pipeline->descriptor_set_layout);
++	}
+ 	void Stop() {
+ 		{
+ 			std::lock_guard lock(mutex);
+@@ -4511,16 +4525,25 @@ struct PipelineCache::PrefetchState {
+ 		// Interface/resource arrays are copied. Compiled program metadata and shader modules
+ 		// are immutable and owned by ProgramCache until after Stop has joined every task.
+ 		auto task = std::make_shared<std::packaged_task<Result()>>(
+-		    [this, key, vertex, pixel_copy = pixel != nullptr ? std::optional(*pixel) : std::nullopt,
+-		     programs] {
++		    [this, key, vertex_copy = vertex, pixel_copy = pixel != nullptr ? std::optional(*pixel) : std::nullopt,
++		     programs]() mutable {
+ 			    Profiler::SetThreadName("PipelineCompiler");
++			    // Native pipeline creation only needs the compiled program and stage presence.
++			    // Per-draw descriptor values belong to the producer's reusable slot.
++			    static const ShaderRecompiler::IR::ResourceSnapshot empty {};
++			    if (vertex_copy.stage.resources) vertex_copy.stage.resources = &empty;
++			    if (pixel_copy && pixel_copy->stage.resources) pixel_copy->stage.resources = &empty;
+ 			    Result result {std::make_unique<Pipeline>()};
+ 			    const auto begin = CompileClockNs();
+ 			    GraphicsPipelineCreateHook keyed_hook;
+-			    if (keyed && (cache.m_known != nullptr || cache.m_journal != nullptr)) {
++			    const bool fast = !keyed && cache.m_fast_first != nullptr;
++			    if (fast || (keyed && (cache.m_known != nullptr || cache.m_journal != nullptr))) {
+ 				    keyed_hook = [&](const vk::GraphicsPipelineCreateInfo& info,
+ 				                     std::span<const uint32_t> layout_signature, vk::Pipeline* pipeline) {
+-					    result.content    = DescribeGraphicsPipeline(info, layout_signature);
++					    if (cache.m_known != nullptr || cache.m_journal != nullptr)
++						    result.content = DescribeGraphicsPipeline(info, layout_signature);
++					    if (fast)
++						    return cache.m_fast_first->CreateGraphics(info, result.content, pipeline, result.fast);
+ 					    const auto made   = cache.m_graphics.device.createGraphicsPipelines(
+                             cache.m_driver_cache, 1, &info, nullptr, pipeline);
+ 					    if (made == vk::Result::eSuccess) cache.NoteKnownPipeline(result.content.key);
+@@ -4528,7 +4551,7 @@ struct PipelineCache::PrefetchState {
+ 				    };
+ 			    }
+ 			    CreatePipelineInternal(cache.m_graphics, *result.pipeline, key.rendering,
+-			                           key.vertex_input, {&vertex, 1},
++			                           key.vertex_input, {&vertex_copy, 1},
+ 			                           pixel_copy ? &*pixel_copy : nullptr, programs,
+ 			                           key.static_params, cache.m_driver_cache,
+ 			                           keyed_hook ? &keyed_hook : nullptr);
+@@ -4537,11 +4560,11 @@ struct PipelineCache::PrefetchState {
+ 			    g_compile_totals.gfx_pipelines.fetch_add(1, std::memory_order_relaxed);
+ 			    g_compile_totals.gfx_pipeline_ns.fetch_add(result.compile_ns, std::memory_order_relaxed);
+ 			    HangTrace::RecordCompile({.kind = HangTrace::CompileKind::GraphicsPipeline,
+-			        .stage = "gfx", .guest_hash = vertex.stage.program->shader_hash,
++			        .stage = "gfx", .guest_hash = vertex_copy.stage.program->shader_hash,
+ 			        .id = programs.vertex[0].id, .id2 = pixel_copy ? programs.pixel.id : 0,
+ 			        .pipeline_ns = result.compile_ns, .total_ns = result.compile_ns,
+ 			        .detail = "prefetch-worker"});
+-			    cache.NotePipelineCreated(result.compile_ns);
++			    if (!result.fast.snapshot && !result.fast.cache_hit) cache.NotePipelineCreated(result.compile_ns);
+ 			    return result;
+ 		    });
+ 		auto future = task->get_future();
+@@ -5394,6 +5417,7 @@ void PipelineCache::InitializeKnownPipelines() {
  	// their identities.
  	m_program_cache->identify_modules = journal || list;
  	PipelineJournal::Settings settings;
@@ -1555,7 +2253,7 @@ index e1cf54f2..293e7c92 100644
  	settings.background_writer = false;
  	settings.sealed_writes     = true;
  	settings.log               = [](const std::string& message) { PipelineCacheLog("{}", message); };
-@@ -5445,6 +5455,7 @@ void PipelineCache::InitializePipelineJournal() {
+@@ -5445,6 +5469,7 @@ void PipelineCache::InitializePipelineJournal() {
  			const auto  identity   = fmt::format("kyty pipeline journal 1; device {:08x}:{:08x}", properties.vendorID,
  			                                     properties.deviceID);
  			PipelineJournal::Settings settings;
@@ -1563,7 +2261,7 @@ index e1cf54f2..293e7c92 100644
  			settings.path     = path;
  			settings.identity = std::vector<uint8_t>(identity.begin(), identity.end());
  			settings.log      = [](const std::string& message) { PipelineCacheLog("{}", message); };
-@@ -5768,10 +5779,12 @@ struct PipelineCache::StatsReporter {
+@@ -5768,10 +5793,12 @@ struct PipelineCache::StatsReporter {
  	std::jthread                thread; // last: started once the rest is constructed
  };
  
@@ -1578,7 +2276,7 @@ index e1cf54f2..293e7c92 100644
  	// Each cache counts its generations in its own range, so a per-thread lookup memo left by a
  	// destroyed cache can never match a later cache allocated at the same address (tests create
  	// several render contexts in one process).
-@@ -5781,7 +5794,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
+@@ -5781,7 +5808,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
  	InitializeDriverCache();
  	InitializePipelineList();
  	InitializeKnownPipelines();
@@ -1587,7 +2285,31 @@ index e1cf54f2..293e7c92 100644
  		m_saver = std::make_unique<DriverCacheSaver>(*this);
  	}
  	InitializeProgramDiskCache();
-@@ -5996,6 +6009,7 @@ void PipelineCache::InitializeProgramDiskCache() {
+@@ -5807,16 +5834,20 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
+ 		} else {
+ 			m_fast_first = std::make_unique<FastFirstState>(*this);
+ 			PipelineCacheLog("Pipeline fast-first: new pipelines are built unoptimized and "
+-			                 "optimized in the background (driver-cache probe: {}); pipeline "
+-			                 "prefetch (KYTY_PIPELINE_PREFETCH) is off with it",
++			                 "optimized in the background (driver-cache probe: {})",
+ 			                 !m_fast_first->probe_supported ? "unsupported"
+ 			                 : m_fast_first->probe_all      ? "every pipeline"
+ 			                 : m_known != nullptr           ? "pipelines known to be cached"
+ 			                                                : "off");
+ 		}
+ 	}
++	// Predictions for the primary cache use its own immutable programs. Secondary-eye builds
++	// may borrow another cache's modules and stay on their original synchronous first-use path.
++	const bool fast_lookahead = !m_read_only_persistence &&
++	                            EnvU64("KYTY_FAST_FIRST_LOOKAHEAD", 0) != 0 &&
++	                            EnvU64("KYTY_PIPELINE_SKIP", 0) == 0;
+ 	if ((g_pipeline_prefetch.On() || EnvU64("KYTY_PIPELINE_PREFETCH_POOL", 0) != 0) && m_library == nullptr &&
+-	    m_fast_first == nullptr) {
++	    (m_fast_first == nullptr || fast_lookahead)) {
+ 		const auto threads = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_PREFETCH_THREADS", 2), 1, 4);
+ 		m_prefetch = std::make_unique<PrefetchState>(*this, threads);
+ 		PipelineCacheLog("Pipeline prefetch: {} compile workers; draws always wait for their exact pipeline", threads);
+@@ -5996,6 +6027,7 @@ void PipelineCache::InitializeProgramDiskCache() {
  	// state that the emitter reads is part of the fingerprint already; the device and driver are
  	// named as well, so that no device-dependent input can be missed).
  	ProgramDiskCache::Settings settings;
@@ -1595,7 +2317,7 @@ index e1cf54f2..293e7c92 100644
  	settings.path           = path;
  	settings.identity       = ShaderRecompiler::CodegenFingerprint();
  	settings.periodic_saves = EnvU64("KYTY_PROGRAM_CACHE_SAVE", 1) != 0;
-@@ -6238,7 +6252,7 @@ void PipelineCache::Save() {
+@@ -6238,7 +6270,7 @@ void PipelineCache::Save() {
  	if (m_saver != nullptr && m_saver->saved_created != 0 &&
  	    m_saver->created.load(std::memory_order_acquire) == m_saver->saved_created) {
  		PipelineCacheLog("Vulkan pipeline cache: no new pipelines since the last save");
@@ -1604,7 +2326,7 @@ index e1cf54f2..293e7c92 100644
  		return;
  	}
  	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
-@@ -6293,6 +6307,7 @@ void PipelineCache::InitializeShaderPrecompile() {
+@@ -6293,6 +6325,7 @@ void PipelineCache::InitializeShaderPrecompile() {
  	        properties.deviceID, ShaderStoredInputInfoSize<ShaderVertexInputInfo>(),
  	        ShaderStoredInputInfoSize<ShaderPixelInputInfo>(), ShaderStoredInputInfoSize<ShaderComputeInputInfo>());
  		ShaderJournal::Settings settings;
@@ -1612,7 +2334,7 @@ index e1cf54f2..293e7c92 100644
  		settings.path     = path;
  		settings.identity = std::vector<uint8_t>(identity.begin(), identity.end());
  		settings.log      = [](const std::string& message) { PipelineCacheLog("{}", message); };
-@@ -6308,6 +6323,7 @@ void PipelineCache::InitializeShaderPrecompile() {
+@@ -6308,6 +6341,7 @@ void PipelineCache::InitializeShaderPrecompile() {
  		// The pipeline list alone: a journal object only to hold the replay's input (no file, and the
  		// program cache records nothing into it).
  		ShaderJournal::Settings settings;
@@ -1620,8 +2342,58 @@ index e1cf54f2..293e7c92 100644
  		settings.background_writer = false;
  		m_shader_journal           = std::make_unique<ShaderJournal>(std::move(settings));
  	}
+@@ -7327,7 +7361,7 @@ void PipelineCache::PrefetchGraphicsPipeline(std::span<const RenderColorInfo> co
+     const RenderDepthInfo& depth, std::span<const ShaderVertexInputInfo> vertex_info,
+     CommandBuffer& command, const ShaderPixelInputInfo* pixel_info,
+     vk::PrimitiveTopology topology, bool primitive_restart_enable, const GraphicsPrograms& programs) {
+-	if (!PipelinePrefetchEnabled() || vertex_info.size() != 1) return;
++	if (m_fast_first != nullptr || !PipelinePrefetchEnabled() || vertex_info.size() != 1) return;
+ 	PipelineTargets targets;
+ 	targets.color_count = static_cast<uint32_t>(colors.size());
+ 	for (uint32_t i = 0; i < targets.color_count; i++) {
+@@ -7525,7 +7559,9 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+ 			wait_begin = 0;
+ 		}
+ 	}
+-	if (ready_from == nullptr && m_prefetch != nullptr && vertex_info.size() == 1 &&
++	if (ready_from == nullptr && m_prefetch != nullptr &&
++	    (m_fast_first == nullptr || m_prefetch->pending_count.load(std::memory_order_relaxed) != 0) &&
++	    vertex_info.size() == 1 &&
+ 	    topology != vk::PrimitiveTopology::ePatchList && !graphics_debug_dump_enabled()) {
+ 		{
+ 			Common::LockGuard lock(m_mutex);
+@@ -7534,7 +7570,8 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+ 			}
+ 			// Reserve the key before releasing the map. Other preparation threads may submit
+ 			// independent keys while this draw waits, allowing compiles to overlap each other.
+-			if (PipelinePrefetchEnabled()) m_prefetch->Request(key, vs_input_info, ps_input_info, programs);
++			if (m_fast_first == nullptr && PipelinePrefetchEnabled())
++				m_prefetch->Request(key, vs_input_info, ps_input_info, programs);
+ 		}
+ 		wait_begin = CompileClockNs();
+ 		ready = m_prefetch->Take(key);
+@@ -7543,9 +7580,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+ 	Common::LockGuard lock(m_mutex);
+ 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
+ 		if (ready.pipeline != nullptr) {
+-			m_graphics.device.destroyPipeline(ready.pipeline->pipeline, nullptr);
+-			ReleasePipelineLayout(m_graphics, ready.pipeline->pipeline_layout,
+-			                      ready.pipeline->descriptor_set_layout);
++			ready_from->Discard(ready);
+ 			ready_from->Complete(key);
+ 		}
+ 		return remember(*iter->second);
+@@ -7573,7 +7608,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+ 	// fast-link it and hand back the create info for the background optimized compile.
+ 	GraphicsPipelineLibrary::Result library_result;
+ 	GraphicsPipelineCreateHook      library_hook;
+-	FastFirstState::GraphicsFast    fast_result;
++	FastFirstState::GraphicsFast    fast_result = std::move(ready.fast);
+ 	GraphicsContent                 content;
+ 	const bool                      keyed = m_known != nullptr || m_journal != nullptr;
+ 	if (m_fast_first != nullptr && !prefetched && !m_fast_first->scheduler.Stopped()) {
 diff --git a/src/graphics/host_gpu/renderer/pipeline/pipelineCache.h b/src/graphics/host_gpu/renderer/pipeline/pipelineCache.h
-index 949057dc..ef18c97e 100644
+index 949057dc..b16d881f 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/pipelineCache.h
 +++ b/src/graphics/host_gpu/renderer/pipeline/pipelineCache.h
 @@ -118,7 +118,7 @@ struct ShaderProgram {
@@ -1633,7 +2405,17 @@ index 949057dc..ef18c97e 100644
  	~PipelineCache();
  	KYTY_CLASS_NO_COPY(PipelineCache);
  	// Final save of the driver pipeline cache (exit). Stops the periodic saver first, then
-@@ -408,6 +408,7 @@ private:
+@@ -133,6 +133,9 @@ public:
+ 		bool                    uses_push_descriptors = false;
+ 		// Built by the start-up compute prewarm and not used by a dispatch yet (statistics only).
+ 		bool                    prewarmed             = false;
++		uint32_t                descriptor_elements   = 0;
++		uint32_t                descriptor_writes     = 0;
++		vk::ShaderStageFlags    push_stages           = {};
+ 	};
+ 
+ 	struct GraphicsPrograms {
+@@ -408,6 +411,7 @@ private:
  	};
  
  	GraphicContext&               m_graphics;
@@ -1641,6 +2423,28 @@ index 949057dc..ef18c97e 100644
  	std::unique_ptr<ProgramCache> m_program_cache;
  	// Persistent translated-program cache (KYTY_PROGRAM_CACHE, programDiskCache.h); null when
  	// off. m_program_cache refers to it.
+diff --git a/src/graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h b/src/graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h
+index 1f4fbe7a..0c5b9540 100644
+--- a/src/graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h
++++ b/src/graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h
+@@ -69,7 +69,7 @@ namespace Libs::Graphics {
+ struct FastFirstCounters {
+ 	std::atomic<uint64_t> graphics_fast {0};   // pipelines used unoptimized first
+ 	std::atomic<uint64_t> compute_fast {0};
+-	std::atomic<uint64_t> fast_ns {0};         // time the draws waited for the fast builds
++	std::atomic<uint64_t> fast_ns {0};         // total native build time, including prefetched builds
+ 	std::atomic<uint64_t> cache_hits {0};      // already in the driver cache: built optimized, no compile
+ 	std::atomic<uint64_t> ineligible {0};      // built optimized as usual (tessellation, mesh, ...)
+ 	std::atomic<uint64_t> cap_fallbacks {0};   // built optimized as usual: background queue full
+@@ -105,7 +105,7 @@ struct FastFirstSnapshot {
+ [[nodiscard]] inline std::string FormatFastFirst(const FastFirstSnapshot& s) {
+ 	char text[640];
+ 	std::snprintf(text, sizeof(text),
+-	              "Pipeline fast-first: %llu fast builds (%llu graphics, %llu compute; draws waited "
++	              "Pipeline fast-first: %llu fast builds (%llu graphics, %llu compute; initial builds took "
+ 	              "%.1f ms), %llu optimized swaps (worker %.1f ms, estimated stall saved %.1f ms), "
+ 	              "%llu pending (peak %llu); %llu new pipelines seen; built optimized as usual: "
+ 	              "%llu driver-cache hits (probe %.1f ms), "
 diff --git a/src/graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.cpp b/src/graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.cpp
 index 21dc8bd6..f2a38fc5 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.cpp
@@ -1797,10 +2601,21 @@ index 976a8936..ca4fa673 100644
  		// Flush writes only the records recorded before the last Seal().
  		bool                  sealed_writes     = false;
 diff --git a/src/graphics/host_gpu/renderer/pipeline/shaders.cpp b/src/graphics/host_gpu/renderer/pipeline/shaders.cpp
-index 4479df7f..8b923837 100644
+index 4479df7f..e6d41565 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/shaders.cpp
 +++ b/src/graphics/host_gpu/renderer/pipeline/shaders.cpp
-@@ -519,9 +519,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
+@@ -201,6 +201,10 @@ static void AssignPipelineLayout(GraphicContext& graphics, PipelineCache::Pipeli
+ 	pipeline.descriptor_set_layout = layouts.set_layout;
+ 	pipeline.pipeline_layout       = layouts.pipeline_layout;
+ 	pipeline.uses_push_descriptors = layouts.uses_push_descriptors;
++	pipeline.push_stages = push_stages;
++	pipeline.descriptor_writes = static_cast<uint32_t>(bindings.size());
++	pipeline.descriptor_elements = 0;
++	for (const auto& binding: bindings) pipeline.descriptor_elements += binding.descriptorCount;
+ 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline_layout == nullptr);
+ }
+ 
+@@ -519,9 +523,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
  	    vk::DynamicState::eStencilWriteMask,
  	    vk::DynamicState::eBlendConstants,
  	};
@@ -1848,10 +2663,181 @@ index 46ed1583..1e6dfa0f 100644
  
  uint64_t SpinNs() {
 diff --git a/src/graphics/host_gpu/renderer/render.h b/src/graphics/host_gpu/renderer/render.h
-index ded9d461..e3636045 100644
+index ded9d461..625954df 100644
 --- a/src/graphics/host_gpu/renderer/render.h
 +++ b/src/graphics/host_gpu/renderer/render.h
-@@ -986,6 +986,13 @@ public:
+@@ -7,6 +7,7 @@
+ #include "graphics/guest_gpu/hardwareContext.h"
+ #include "graphics/host_gpu/queueSubmission.h"
+ #include "graphics/host_gpu/renderer/commandStream.h"
++#include "graphics/host_gpu/renderer/vulkanCallTiming.h"
+ #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
+ #include "graphics/host_gpu/renderer/pipeline/descriptorSetReuse.h"
+ #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+@@ -368,7 +369,7 @@ public:
+ 	static constexpr int32_t PushMissFresh = -4;
+ 	int32_t PushDescriptors(vk::PipelineBindPoint point, vk::PipelineLayout layout, uint32_t set,
+ 	                        uint32_t count, const vk::WriteDescriptorSet* writes,
+-	                        bool known_miss = false);
++	                        bool known_miss = false, bool disjoint_writes = false);
+ 	void InvalidateDescriptors(vk::PipelineBindPoint point);
+ 	// Advances whenever a descriptor command is recorded for the bind point (a push or a set bind),
+ 	// its state is forgotten, or the command buffer begins. Unchanged since a push: the descriptors
+@@ -394,6 +395,7 @@ public:
+ 	// A foreign recorder (NGX DLSS, dlss.cpp) bound pipelines, descriptors and push constants
+ 	// through the native handle: nothing bound before may be assumed in effect.
+ 	void ForgetBoundState() {
++		ForgetInputBindings();
+ 		m_bound_pipelines = {};
+ 		InvalidateDescriptors(vk::PipelineBindPoint::eCompute);
+ 		InvalidateDescriptors(vk::PipelineBindPoint::eGraphics);
+@@ -484,8 +486,26 @@ private:
+ 	HW::UserConfig*     m_user_config = nullptr;
+ 	HW::Shader*         m_shaders     = nullptr;
+ 	std::array<vk::Pipeline, 2> m_bound_pipelines {};
++	struct InputBindings {
++		std::array<vk::Buffer, 32> buffers {};
++		std::array<vk::DeviceSize, 32> offsets {}, sizes {};
++		uint32_t valid_prefix = 0;
++		vk::Buffer index {};
++		vk::DeviceSize index_offset = 0;
++		vk::IndexType index_type {};
++	};
++	mutable InputBindings m_input;
++	void ForgetInputBindings() const {
++		m_input.valid_prefix = 0;
++		m_input.index = nullptr;
++	}
++	bool ReusesIndex(vk::Buffer buffer, vk::DeviceSize offset, vk::IndexType type) const;
++	bool ReusesVertices(uint32_t first, uint32_t count, const vk::Buffer* buffers,
++	                    const vk::DeviceSize* offsets, const vk::DeviceSize* sizes,
++	                    const vk::DeviceSize* strides) const;
+ 	struct DescriptorState {
+ 		vk::PipelineLayout layout = nullptr;
++		bool disjoint_writes = false;
+ 		// Non-null: set 0 is this bound descriptor set (the push contents below are unused).
+ 		vk::DescriptorSet bound_set = nullptr;
+ 		std::vector<vk::WriteDescriptorSet> writes;
+@@ -647,7 +667,9 @@ public:
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->bindPipeline(point, pipeline);
+ 		} else {
+-			m_owner->m_buffer.bindPipeline(point, pipeline);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::Pipeline, [&] {
++				m_owner->m_buffer.bindPipeline(point, pipeline);
++			});
+ 		}
+ 	}
+ 	void bindDescriptorSets(vk::PipelineBindPoint point, vk::PipelineLayout layout,
+@@ -657,8 +679,10 @@ public:
+ 			m_owner->m_encoder->bindDescriptorSets(point, layout, first_set, set_count, sets,
+ 			                                       dynamic_count, dynamic_offsets);
+ 		} else {
+-			m_owner->m_buffer.bindDescriptorSets(point, layout, first_set, set_count, sets,
++			VulkanCallTiming::Record(VulkanCallTiming::Op::BindSet, [&] {
++				m_owner->m_buffer.bindDescriptorSets(point, layout, first_set, set_count, sets,
+ 			                                     dynamic_count, dynamic_offsets);
++			});
+ 		}
+ 	}
+ 	void pushDescriptorSetKHR(vk::PipelineBindPoint point, vk::PipelineLayout layout, uint32_t set,
+@@ -666,7 +690,9 @@ public:
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->pushDescriptorSetKHR(point, layout, set, count, writes);
+ 		} else {
+-			m_owner->m_buffer.pushDescriptorSetKHR(point, layout, set, count, writes);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::PushDescriptors, [&] {
++				m_owner->m_buffer.pushDescriptorSetKHR(point, layout, set, count, writes);
++			});
+ 		}
+ 	}
+ 	// vkUpdateDescriptorSets of `set` (every write's dstSet): a device call, made at once natively,
+@@ -676,7 +702,9 @@ public:
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->updateDescriptorSets(set, count, writes);
+ 		} else {
+-			device.updateDescriptorSets(count, writes, 0, nullptr);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::UpdateSet, [&] {
++				device.updateDescriptorSets(count, writes, 0, nullptr);
++			});
+ 		}
+ 	}
+ 	void pushConstants(vk::PipelineLayout layout, vk::ShaderStageFlags stages, uint32_t offset,
+@@ -684,23 +712,37 @@ public:
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->pushConstants(layout, stages, offset, size, data);
+ 		} else {
+-			m_owner->m_buffer.pushConstants(layout, stages, offset, size, data);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::PushConstants, [&] {
++				m_owner->m_buffer.pushConstants(layout, stages, offset, size, data);
++			});
+ 		}
+ 	}
+ 	void bindVertexBuffers2(uint32_t first, uint32_t count, const vk::Buffer* buffers,
+ 	                        const vk::DeviceSize* offsets, const vk::DeviceSize* sizes,
+ 	                        const vk::DeviceSize* strides) const {
++		if (m_owner->ReusesVertices(first, count, buffers, offsets, sizes, strides)) {
++			VulkanCallTiming::Skipped(VulkanCallTiming::Op::Vertex);
++			return;
++		}
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->bindVertexBuffers2(first, count, buffers, offsets, sizes, strides);
+ 		} else {
+-			m_owner->m_buffer.bindVertexBuffers2(first, count, buffers, offsets, sizes, strides);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::Vertex, [&] {
++				m_owner->m_buffer.bindVertexBuffers2(first, count, buffers, offsets, sizes, strides);
++			});
+ 		}
+ 	}
+ 	void bindIndexBuffer(vk::Buffer buffer, vk::DeviceSize offset, vk::IndexType type) const {
++		if (m_owner->ReusesIndex(buffer, offset, type)) {
++			VulkanCallTiming::Skipped(VulkanCallTiming::Op::Index);
++			return;
++		}
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->bindIndexBuffer(buffer, offset, type);
+ 		} else {
+-			m_owner->m_buffer.bindIndexBuffer(buffer, offset, type);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::Index, [&] {
++				m_owner->m_buffer.bindIndexBuffer(buffer, offset, type);
++			});
+ 		}
+ 	}
+ 	void setViewportWithCount(uint32_t count, const vk::Viewport* viewports) const {
+@@ -849,7 +891,9 @@ public:
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->draw(vertex_count, instance_count, first_vertex, first_instance);
+ 		} else {
+-			m_owner->m_buffer.draw(vertex_count, instance_count, first_vertex, first_instance);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::Draw, [&] {
++				m_owner->m_buffer.draw(vertex_count, instance_count, first_vertex, first_instance);
++			});
+ 		}
+ 	}
+ 	void drawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index,
+@@ -858,15 +902,19 @@ public:
+ 			m_owner->m_encoder->drawIndexed(index_count, instance_count, first_index, vertex_offset,
+ 			                                first_instance);
+ 		} else {
+-			m_owner->m_buffer.drawIndexed(index_count, instance_count, first_index, vertex_offset,
++			VulkanCallTiming::Record(VulkanCallTiming::Op::IndexedDraw, [&] {
++				m_owner->m_buffer.drawIndexed(index_count, instance_count, first_index, vertex_offset,
+ 			                              first_instance);
++			});
+ 		}
+ 	}
+ 	void drawMeshTasksEXT(uint32_t x, uint32_t y, uint32_t z) const {
+ 		if (m_owner->Encoding()) {
+ 			m_owner->m_encoder->drawMeshTasksEXT(x, y, z);
+ 		} else {
+-			m_owner->m_buffer.drawMeshTasksEXT(x, y, z);
++			VulkanCallTiming::Record(VulkanCallTiming::Op::MeshDraw, [&] {
++				m_owner->m_buffer.drawMeshTasksEXT(x, y, z);
++			});
+ 		}
+ 	}
+ 	void drawMeshTasksIndirectEXT(vk::Buffer buffer, vk::DeviceSize offset, uint32_t draw_count,
+@@ -986,6 +1034,13 @@ public:
  			m_owner->m_buffer.writeTimestamp2(stage, pool, query);
  		}
  	}
@@ -1865,15 +2851,16 @@ index ded9d461..e3636045 100644
  	void writeBufferMarkerAMD(vk::PipelineStageFlagBits stage, vk::Buffer buffer, vk::DeviceSize offset,
  	                          uint32_t marker) const {
  		if (m_owner->Encoding()) {
-@@ -1088,6 +1095,7 @@ public:
+@@ -1088,6 +1143,8 @@ public:
  		m_prepared_draw = nullptr;
  		return prepared;
  	}
 +	[[nodiscard]] bool PreparedDrawBorrowed() const noexcept { return m_prepared_draw_borrowed; }
++	void ReleaseBorrowedShaderInputs(const DrawPrep::PreparedDraw& prepared);
  	// KYTY_DRAW_PREP_BINDINGS: the committed draw's binding plan while its preparation awaits
  	// validation (null: none), and its activation once DrawPrep::Validate accepted the
  	// preparation (RefreshShaders).
-@@ -1222,6 +1230,7 @@ private:
+@@ -1222,6 +1279,7 @@ private:
  	// Reused by every draw (all draws hold the render mutex); DrawRenderState::Reset restores
  	// only what the previous draw changed. Owns the draw's per-stage program preparation.
  	std::unique_ptr<DrawRenderState>      m_draw_state;
@@ -1881,7 +2868,7 @@ index ded9d461..e3636045 100644
  	// Program preparation output of the current dispatch; its stage runtime points here.
  	PipelineCache::StagePrep              m_compute_prep;
  	// KYTY_LDS_DEVICE_BUFFER: device-local buffer of compute LDS regions (BindComputeLds), grown
-@@ -1353,6 +1362,7 @@ private:
+@@ -1353,6 +1411,7 @@ private:
  	// Draw-prep (drawPrep.h): the preparation of the draw the engine is committing, taken by
  	// RefreshShaders in place of GetGraphicsPrograms when its certificate holds. Null otherwise.
  	DrawPrep::PreparedDraw* m_prepared_draw = nullptr;
@@ -1889,7 +2876,7 @@ index ded9d461..e3636045 100644
  	// KYTY_DRAW_PREP_DISPATCH: the preparation of the dispatch the engine is executing, taken by
  	// DispatchDirect in place of GetComputeProgram when its certificate holds. Null otherwise.
  	DrawPrep::PreparedDraw* m_prepared_dispatch = nullptr;
-@@ -1506,6 +1516,7 @@ private:
+@@ -1506,6 +1565,7 @@ private:
  	}
  	std::array<DrawRunRecord, 32> m_run_kept;
  	uint32_t                     m_run_kept_next = 0;
@@ -1897,8 +2884,25 @@ index ded9d461..e3636045 100644
  	bool                         m_run_recall    = false;
  	bool                         m_run_keepable  = false;
  	bool          m_run_prev_valid     = false; // m_run.valid when the committed draw began
+@@ -1520,6 +1580,16 @@ private:
+ 	[[nodiscard]] static bool DrawRunPipeSwapCompatible(
+ 	    const ShaderRecompiler::IR::CompiledShaderInfo& recorded,
+ 	    const ShaderRecompiler::IR::CompiledShaderInfo& program);
++	enum class SwapAccess : uint8_t { Incompatible, Ineligible, MayWriteBuffers, ReadOnly };
++	struct SwapEntry {
++		const ShaderRecompiler::IR::CompiledShaderInfo* from = nullptr;
++		const ShaderRecompiler::IR::CompiledShaderInfo* to = nullptr;
++		SwapAccess access = SwapAccess::Incompatible;
++	};
++	// Compiled permutations have stable addresses for the lifetime of this context.
++	std::array<SwapEntry, 128> m_swap_access {};
++	[[nodiscard]] SwapAccess DrawRunSwapAccess(const ShaderRecompiler::IR::CompiledShaderInfo& from,
++	                                           const ShaderRecompiler::IR::CompiledShaderInfo& to);
+ 	bool          m_run_targets_kept   = false; // KYTY_DRAW_RUN_TARGETS: the draw kept the record's
+ 	// KYTY_DRAW_RUN_TARGETS: whether the committed draw may keep the record's resolved targets.
+ 	[[nodiscard]] bool DrawRunTargetsCandidate(const CommandBuffer& buffer, const DrawRenderState& state,
 diff --git a/src/graphics/host_gpu/renderer/renderContext.cpp b/src/graphics/host_gpu/renderer/renderContext.cpp
-index 0adaebd0..3368d2b9 100644
+index 0adaebd0..954dbb03 100644
 --- a/src/graphics/host_gpu/renderer/renderContext.cpp
 +++ b/src/graphics/host_gpu/renderer/renderContext.cpp
 @@ -1,4 +1,6 @@
@@ -1924,10 +2928,11 @@ index 0adaebd0..3368d2b9 100644
        m_buffer_cache(graphics, m_command_scheduler, m_page_manager, m_texture_cache),
        m_texture_cache(graphics, m_command_scheduler, m_page_manager, m_buffer_cache),
        m_occlusion_counter(*this), m_lod_stats(*this) {
-@@ -147,6 +150,15 @@ void RenderContext::InitializeGpu(VideoOut::VideoOutDriver* video_out) {
+@@ -146,7 +149,18 @@ RenderContext::~RenderContext() {
+ void RenderContext::InitializeGpu(VideoOut::VideoOutDriver* video_out) {
  	EXIT_IF(m_gpu != nullptr);
  	m_video_out = video_out;
- 	m_gpu       = std::make_unique<GuestGpu>(*this);
+-	m_gpu       = std::make_unique<GuestGpu>(*this);
 +	if (Vr::SameFrameStereoEnabled() && m_stereo_primary == nullptr) {
 +		m_stereo_eye = std::make_unique<RenderContext>(m_graphics, this);
 +		m_stereo_eye->m_video_out = video_out;
@@ -1937,18 +2942,25 @@ index 0adaebd0..3368d2b9 100644
 +		});
 +		Log::WriteToConsoleAndLog("VR paired rendering: independent secondary GPU resource context\n");
 +	}
++	// Attaching the command sequencer captures both binding-plan contexts for its
++	// preparation workers. Publish the secondary before those workers start.
++	m_gpu = std::make_unique<GuestGpu>(*this);
  	std::unique_lock lock(m_gpu_notify_mutex);
  	m_gpu_notify = m_gpu.get();
  }
-@@ -165,6 +177,7 @@ void RenderContext::ShutdownGpu() {
+@@ -165,9 +179,10 @@ void RenderContext::ShutdownGpu() {
  	}
  	if (m_gpu != nullptr) {
  		m_gpu->Shutdown();
 +		m_stereo_eye.reset();
  		m_gpu.reset();
  	}
- 	if (m_video_out != nullptr) {
-@@ -177,10 +190,20 @@ void RenderContext::ShutdownGpu() {
+-	if (m_video_out != nullptr) {
++	if (m_video_out != nullptr || IsStereoEyeContext()) {
+ 		if (m_command_scheduler.Active()) {
+ 			m_command_scheduler.Finish();
+ 		}
+@@ -177,10 +192,20 @@ void RenderContext::ShutdownGpu() {
  }
  
  GuestGpu& RenderContext::GetGpu() const {
@@ -1969,7 +2981,7 @@ index 0adaebd0..3368d2b9 100644
  VideoOut::VideoOutDriver& RenderContext::GetVideoOut() const {
  	EXIT_IF(m_video_out == nullptr);
  	return *m_video_out;
-@@ -222,6 +245,10 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
+@@ -222,6 +247,10 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
  			m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size, true);
  			lap(FaultCost::Part::Buffer);
  			m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
@@ -1980,7 +2992,7 @@ index 0adaebd0..3368d2b9 100644
  			lap(FaultCost::Part::Texture);
  			// The faulting page gets the protection its watchers ask even when neither cache
  			// released anything here: another thread may have released it without having applied
-@@ -261,6 +288,7 @@ bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {
+@@ -261,6 +290,7 @@ bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {
  	const PageManager::DeferUnprotectScope defer_unprotect;
  	m_buffer_cache.InvalidateMemory(vaddr, size);
  	m_texture_cache.InvalidateMemory(vaddr, size);
@@ -1988,7 +3000,7 @@ index 0adaebd0..3368d2b9 100644
  	return true;
  }
  
-@@ -315,6 +343,7 @@ bool RenderContext::SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size)
+@@ -315,6 +345,7 @@ bool RenderContext::SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size)
  }
  
  void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
@@ -1996,7 +3008,7 @@ index 0adaebd0..3368d2b9 100644
  	std::lock_guard lock(m_mapped_ranges_mutex);
  	// GPU mapping changes retire clean-read verdicts (the backing translation has its own
  	// generation in the guest address space).
-@@ -340,6 +369,7 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
+@@ -340,6 +371,7 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
  		}
  	}
  	const auto unmap = [this, vaddr, size] {
@@ -2004,7 +3016,7 @@ index 0adaebd0..3368d2b9 100644
  		if (m_command_scheduler.Active()) {
  			Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitUnmap);
  			const auto                    tick = m_command_scheduler.CurrentTick();
-@@ -467,7 +497,19 @@ void RenderContext::NoteGuestProtection(uint64_t vaddr, uint64_t size, bool allo
+@@ -467,7 +499,19 @@ void RenderContext::NoteGuestProtection(uint64_t vaddr, uint64_t size, bool allo
  	}
  }
  
@@ -2024,7 +3036,7 @@ index 0adaebd0..3368d2b9 100644
  	const CpGaps::Scope gap(CpGaps::Cat::Gc);
  	if (m_fault_process_pending) {
  		m_fault_process_pending = false;
-@@ -493,7 +535,8 @@ void RenderContext::ReportVram() {
+@@ -493,7 +537,8 @@ void RenderContext::ReportVram() {
  #endif
  	char clock[16];
  	std::strftime(clock, sizeof(clock), "%H:%M:%S", &local);
@@ -2078,7 +3090,7 @@ index 8d87a367..4953720e 100644
  	RenderExecutor            m_render_executor;
  	CommandScheduler          m_command_scheduler;
 diff --git a/src/graphics/host_gpu/renderer/renderDraw.cpp b/src/graphics/host_gpu/renderer/renderDraw.cpp
-index 25b4d339..0805c335 100644
+index 25b4d339..1c8a8994 100644
 --- a/src/graphics/host_gpu/renderer/renderDraw.cpp
 +++ b/src/graphics/host_gpu/renderer/renderDraw.cpp
 @@ -38,6 +38,7 @@
@@ -2119,7 +3131,37 @@ index 25b4d339..0805c335 100644
  }
  
  // uc_check and hw_check of DrawIndex/DrawAuto. KYTY_DRAW_PREP_BINDINGS hwcheck: skipped when the
-@@ -1952,14 +1932,23 @@ static void SwapPreparedStage(PipelineCache::StagePrep& state, PipelineCache::St
+@@ -842,11 +822,13 @@ struct DrawRenderState {
+ 	// Per-draw program preparation. The vertex_info/ps_input_info stage runtimes point into it;
+ 	// it is overwritten by the next preparation, and its vectors keep their capacity.
+ 	PipelineCache::GraphicsStagePreps stage_preps;
++	const PipelineCache::StagePrep* pixel_program_prep = &stage_preps.pixel;
+ 	// color_info entries and vertex_info stages the current draw may have written.
+ 	uint32_t color_slots_written   = 0;
+ 	uint32_t vertex_stages_written = 0;
+ 
+ 	void Reset() {
++		pixel_program_prep = &stage_preps.pixel;
+ 		// KYTY_RENDER_STATE_FAST reset: a draw reads color_info[0, color_count) and depth_info, and
+ 		// its target resolution assigns every field of those (ResolveRenderColorTarget,
+ 		// ResolveRenderDepthTarget). Debug dumps also log color_info[0] and depth_info of draws
+@@ -878,6 +860,15 @@ RenderExecutor::RenderExecutor(RenderContext& context)
+ 
+ RenderExecutor::~RenderExecutor() = default;
+ 
++void RenderExecutor::ReleaseBorrowedShaderInputs(const DrawPrep::PreparedDraw& prepared) {
++	auto& state = *m_draw_state;
++	if (state.vertex_info[0].stage.resources == &prepared.vertex_prep.resources)
++		state.vertex_info[0].stage.resources = nullptr;
++	if (state.ps_input_info.stage.resources == &prepared.pixel_prep.resources)
++		state.ps_input_info.stage.resources = nullptr;
++	state.pixel_program_prep = &state.stage_preps.pixel;
++}
++
+ struct DrawCallInfo {
+ 	CommandBufferDebugOp debug_op       = CommandBufferDebugOp::DrawIndex;
+ 	uint32_t             index_count    = 0;
+@@ -1952,14 +1943,33 @@ static void SwapPreparedStage(PipelineCache::StagePrep& state, PipelineCache::St
  // stage preps are swapped (the preparation keeps the old vectors' capacity) and the stage
  // runtimes re-pointed at the draw state's copies. Like GetGraphicsPrograms, a draw without an
  // active pixel shader leaves the pixel prep untouched.
@@ -2130,6 +3172,16 @@ index 25b4d339..0805c335 100644
  	CopyPreparedVertexInfo(state.vertex_info[0], prepared.vertex_info);
  	state.ps_input_info = prepared.pixel_info;
 -	SwapPreparedStage(state.stage_preps.vertex[0], prepared.vertex_prep);
++	if (borrowed && prepared.borrow_stereo_inputs) {
++		// Draw-prep owns this immutable snapshot through the complete secondary draw, including
++		// MRT replay. Native resources, descriptor writes and uploads are still eye-local.
++		state.vertex_info[0].stage.resources = &prepared.vertex_prep.resources;
++		if (prepared.pixel_active) {
++			state.ps_input_info.stage.resources = &prepared.pixel_prep.resources;
++			state.pixel_program_prep = &prepared.pixel_prep;
++		}
++		return;
++	}
 +	// The secondary borrows the certificate/programs before the primary consumes them.
 +	// Swap its isolated worker copy when available; fallback preparations copy on this thread.
 +	if (borrowed && prepared.stereo_preps_ready)
@@ -2146,7 +3198,7 @@ index 25b4d339..0805c335 100644
  		state.ps_input_info.stage.resources = &state.stage_preps.pixel.resources;
  	}
  }
-@@ -2026,12 +2015,14 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
+@@ -2026,12 +2036,14 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
  	    prepared != nullptr && DrawPrep::Validate(*prepared, state.ps_active, target_export_mapping);
  	CommitStats::StepMark(CommitStats::Step::Validate);
  	if (prepared_valid) {
@@ -2163,7 +3215,7 @@ index 25b4d339..0805c335 100644
  			// The serial preparation on copies, from the same (snapshot) registers.
  			auto vertex_copy = std::make_unique<std::array<ShaderVertexInputInfo, 3>>();
  			auto pixel_copy  = std::make_unique<ShaderPixelInputInfo>();
-@@ -2429,6 +2420,15 @@ static bool DrawOnlyChangesPicture(RenderContext& context, const DrawRenderState
+@@ -2429,6 +2441,15 @@ static bool DrawOnlyChangesPicture(RenderContext& context, const DrawRenderState
  }
  
  void RenderExecutor::BeginDrawRun() {
@@ -2179,7 +3231,49 @@ index 25b4d339..0805c335 100644
  	m_run_prev_valid     = m_run.valid;
  	m_run_keepable       = m_run.valid;
  	m_run.valid          = false;
-@@ -4163,6 +4163,31 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -2806,13 +2827,15 @@ bool RenderExecutor::DrawRunCandidate(const CommandBuffer& buffer, const DrawRen
+ 		const auto* recorded = static_cast<const ShaderRecompiler::IR::CompiledShaderInfo*>(
+ 		    m_run.vertex_program);
+ 		const auto& program = *state.vertex_info[0].stage.program;
+-		if (recorded == nullptr || recorded == &program || !DrawRunPipeSwapCompatible(*recorded, program)) {
++		const auto access = recorded != nullptr && recorded != &program
++		    ? DrawRunSwapAccess(*recorded, program) : SwapAccess::Incompatible;
++		if (access == SwapAccess::Incompatible) {
+ 			OwnedCounters::Add(totals.swap_incompatible, 1);
+ 			return false;
+ 		}
+ 		// The new vertex program: run-eligible, and its buffer writes (if allowed) off the run's images.
+-		if (!DrawRunProgramEligible(program)) {
+-			if (!m_run.record_writes_ok || !DrawRunProgramEligible(program, true)) {
++		if (access != SwapAccess::ReadOnly) {
++			if (!m_run.record_writes_ok || access == SwapAccess::Ineligible) {
+ 				DrawRun::CountMiss(Miss::Writes);
+ 				return false;
+ 			}
+@@ -2851,6 +2874,22 @@ bool RenderExecutor::DrawRunCandidate(const CommandBuffer& buffer, const DrawRen
+ 	return true;
+ }
+ 
++RenderExecutor::SwapAccess RenderExecutor::DrawRunSwapAccess(
++    const ShaderRecompiler::IR::CompiledShaderInfo& from, const ShaderRecompiler::IR::CompiledShaderInfo& to) {
++	const auto key = (reinterpret_cast<uintptr_t>(&from) >> 4) * 0x9e3779b97f4a7c15ull ^
++	                 (reinterpret_cast<uintptr_t>(&to) >> 4) * 0xc2b2ae3d27d4eb4full;
++	auto& entry = m_swap_access[(key >> 32) % m_swap_access.size()];
++	if (entry.from == &from && entry.to == &to) return entry.access;
++	SwapAccess access = SwapAccess::Incompatible;
++	if (DrawRunPipeSwapCompatible(from, to)) {
++		if (DrawRunProgramEligible(to)) access = SwapAccess::ReadOnly;
++		else if (DrawRunProgramEligible(to, true)) access = SwapAccess::MayWriteBuffers;
++		else access = SwapAccess::Ineligible;
++	}
++	entry = {&from, &to, access};
++	return access;
++}
++
+ bool RenderExecutor::DrawRunPipeSwapCompatible(const ShaderRecompiler::IR::CompiledShaderInfo& recorded,
+                                                const ShaderRecompiler::IR::CompiledShaderInfo& program) {
+ 	const auto& a = recorded.info;
+@@ -4163,6 +4202,31 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	}
  	CommitStats::StepMark(CommitStats::Step::LateCheck);
  
@@ -2211,7 +3305,16 @@ index 25b4d339..0805c335 100644
  	// ASTROHYBRID_DLSS (dlss.h): depth attachments by colour target, and the game's temporal
  	// upscale replaced by DLSS Super Resolution. A replaced draw records nothing else; like a
  	// skipped one (KYTY_PIPELINE_SKIP below) no run record may be continued across it.
-@@ -4954,7 +4979,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
+@@ -4194,7 +4258,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+ 	if (state.ps_active && bindings.pixel.has_value()) {
+ 		const auto plain_mode = LodStatsCounter::PlainVariant();
+ 		const auto plain      = plain_mode != LodStatsCounter::Plain::Off
+-		                            ? PipelineCache::PlainPixelProgram(state.stage_preps.pixel)
++		                            ? PipelineCache::PlainPixelProgram(*state.pixel_program_prep)
+ 		                            : ShaderProgram {};
+ 		if (plain) {
+ 			if (bindings.pixel->mip_stats_active) {
+@@ -4954,7 +5018,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
  	const bool primitive_restart = ResolvePrimitiveRestart(buffer, index_source,
  	    MeshRestartEnabled() && state.vertex_info[0].stage.program->stage == ShaderType::Mesh);
  
@@ -2222,7 +3325,7 @@ index 25b4d339..0805c335 100644
  		EXIT_NOT_IMPLEMENTED(args.index_addr == nullptr);
  		const auto* src = static_cast<const uint8_t*>(args.index_addr);
 diff --git a/src/graphics/host_gpu/vma.cpp b/src/graphics/host_gpu/vma.cpp
-index a1bd8541..a62cb783 100644
+index a1bd8541..5cf3ebd6 100644
 --- a/src/graphics/host_gpu/vma.cpp
 +++ b/src/graphics/host_gpu/vma.cpp
 @@ -35,6 +35,11 @@
@@ -2247,7 +3350,122 @@ index a1bd8541..a62cb783 100644
  	if (!graphics.CanReportMemoryUsage()) {
  		return false;
  	}
-@@ -592,8 +600,7 @@ uint64_t GraphicContext::ReleaseRetainedMemory() {
+@@ -416,7 +424,14 @@ bool GraphicContext::CreateSparseImage(const vk::ImageCreateInfo& info, uint32_t
+ 	image.subresource_states.clear();
+ 	image.pool_eligible    = false;
+ 	image.pool_create_info = vk::ImageCreateInfo {};
+-	BindSparseImageLevels(image, first_level);
++	if (!BindSparseImageLevels(image, first_level)) {
++		// No memory at all for the resident levels: undo, so the caller makes an ordinary image
++		// (CreateImage has its own system-memory fallback) instead of a sparse one.
++		device.destroyImage(native, nullptr);
++		image.image = nullptr;
++		image.sparse.reset();
++		return false;
++	}
+ 	if (HangTrace::Enabled()) {
+ 		HangTrace::RecordNativeImage(true, false, static_cast<uint32_t>(sparse_info.format),
+ 		                             sparse_info.extent.width, sparse_info.extent.height,
+@@ -456,14 +471,36 @@ void GraphicContext::WaitSparseBinds() {
+ 	RequireVulkanSuccess(device.waitSemaphores(&wait, UINT64_MAX), "wait for sparse image binds");
+ }
+ 
+-void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_level,
++// KYTY_DEBUG_FAIL_SPARSE_ALLOC=N / KYTY_DEBUG_FAIL_IMAGE_ALLOC=N: the first N video-memory
++// allocations of that kind fail as if video memory were full (tests the fallbacks below).
++static int64_t DebugFailCount(const char* name) {
++	const auto* value = std::getenv(name);
++	return value != nullptr ? std::strtoll(value, nullptr, 10) : 0;
++}
++
++static bool DebugFailSparseAllocation() {
++	static std::atomic<int64_t> remaining {DebugFailCount("KYTY_DEBUG_FAIL_SPARSE_ALLOC")};
++	return remaining.load(std::memory_order_relaxed) > 0 &&
++	       remaining.fetch_sub(1, std::memory_order_relaxed) > 0;
++}
++
++static bool DebugFailImageAllocation() {
++	static std::atomic<int64_t> remaining {DebugFailCount("KYTY_DEBUG_FAIL_IMAGE_ALLOC")};
++	return remaining.load(std::memory_order_relaxed) > 0 &&
++	       remaining.fetch_sub(1, std::memory_order_relaxed) > 0;
++}
++
++bool GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_level,
+                                            vk::Semaphore wait_semaphore, uint64_t wait_value) {
+ 	EXIT_IF(!image.sparse || image.image == nullptr);
+ 	auto&      state  = *image.sparse;
+ 	const auto levels = image.mip_levels;
+ 	const auto first  = std::min(first_level, levels - 1);
+ 	if (first >= state.first_bound) {
+-		return;
++		return true;
++	}
++	if (state.bind_failed) {
++		return false;
+ 	}
+ 	// New levels: [first, end). Levels from tail_first on live in the mip tail, bound as a whole.
+ 	const auto end        = std::min(state.first_bound, levels);
+@@ -487,7 +524,7 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
+ 	bytes += tail_bytes;
+ 	if (bytes == 0) {
+ 		state.first_bound = first;
+-		return;
++		return true;
+ 	}
+ 	VkMemoryRequirements requirements {};
+ 	requirements.size           = bytes;
+@@ -497,9 +534,39 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
+ 	create.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+ 	VmaAllocation     allocation = nullptr;
+ 	VmaAllocationInfo info {};
+-	RequireVulkanSuccess(static_cast<vk::Result>(
+-	                         vmaAllocateMemory(allocator, &requirements, &create, &allocation, &info)),
+-	                     "allocate sparse image memory");
++	auto allocate = [&] {
++		if (create.requiredFlags != 0 && DebugFailSparseAllocation()) {
++			return vk::Result::eErrorOutOfDeviceMemory;
++		}
++		return static_cast<vk::Result>(vmaAllocateMemory(allocator, &requirements, &create, &allocation, &info));
++	};
++	auto result = allocate();
++	if (result != vk::Result::eSuccess) {
++		// Out of video memory (#107: "allocate sparse image memory failed: ErrorOutOfDeviceMemory"
++		// ended the game). Same policy as CreateImage: drop retained images and retry, then accept
++		// any memory type the image allows (system memory: slower to sample, but the game goes on).
++		ReleaseRetainedMemory();
++		result = allocate();
++		if (result != vk::Result::eSuccess && ImageSystemMemoryFallbackEnabled()) {
++			create.requiredFlags  = 0;
++			create.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++			result                = allocate();
++		}
++		static std::atomic<uint32_t> reported {0};
++		if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
++			std::fprintf(stderr,
++			             "Vulkan: video memory full, %s: %ux%u levels %u-%u, %llu bytes (%s; KYTY_IMAGE_SYSMEM_FALLBACK)\n",
++			             result == vk::Result::eSuccess ? "sparse image levels are in system memory"
++			                                            : "sparse image levels stay unbound",
++			             image.extent.width, image.extent.height, first, end - 1,
++			             static_cast<unsigned long long>(bytes), vk::to_string(result).c_str());
++			LogMemoryBudget();
++		}
++		if (result != vk::Result::eSuccess) {
++			state.bind_failed = true;
++			return false;
++		}
++	}
+ 	EXIT_IF(info.offset % state.block_size != 0);
+ 	uint64_t offset = info.offset;
+ 	for (uint32_t level = first; level < std::min(end, tail_first); ++level) {
+@@ -568,6 +635,7 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
+ 	state.first_bound = first;
+ 	state.tail_bound |= need_tail;
+ 	VramStats::Note(VramStats::Kind::Image, true, static_cast<int64_t>(bytes));
++	return true;
+ }
+ 
+ void GraphicContext::ClearRetiredImages() {
+@@ -592,8 +660,7 @@ uint64_t GraphicContext::ReleaseRetainedMemory() {
  }
  
  void GraphicContext::TrimRetiredImages() {
@@ -2257,7 +3475,7 @@ index a1bd8541..a62cb783 100644
  		return;
  	}
  	// Called per garbage collection (every completed submission): look at most every 100 ms.
-@@ -602,6 +609,36 @@ void GraphicContext::TrimRetiredImages() {
+@@ -602,6 +669,36 @@ void GraphicContext::TrimRetiredImages() {
  		return;
  	}
  	m_retired_trim_next = now + std::chrono::milliseconds(100);
@@ -2294,7 +3512,7 @@ index a1bd8541..a62cb783 100644
  	std::scoped_lock lock(m_retired_image_mutex);
  	// Retired in order: the oldest entries are at the front.
  	size_t expired = 0;
-@@ -641,6 +678,20 @@ void GraphicContext::ReportVramStats() {
+@@ -641,6 +738,20 @@ void GraphicContext::ReportVramStats() {
  		return;
  	}
  	using VramStats::ToMiB;
@@ -2315,6 +3533,50 @@ index a1bd8541..a62cb783 100644
  	const auto& properties = GetPhysicalDeviceMemoryProperties();
  	VmaBudget   budgets[VK_MAX_MEMORY_HEAPS] {};
  	vmaGetHeapBudgets(allocator, budgets);
+@@ -809,6 +920,9 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
+ 		VmaAllocationCreateInfo alloc_info {};
+ 		alloc_info.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+ 		auto allocate = [&] {
++			if (alloc_info.requiredFlags != 0 && DebugFailImageAllocation()) {
++				return vk::Result::eErrorOutOfDeviceMemory;
++			}
+ 			Profiler::ScopedFrameWait timing(Profiler::FrameWait::NativeImageCreate);
+ 			vk::Image::CType native_image = VK_NULL_HANDLE;
+ 			VmaAllocation allocation = nullptr;
+@@ -821,13 +935,20 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
+ 			}
+ 			return result;
+ 		};
++		// Every memory failure gets the retries, not only eErrorOutOfDeviceMemory: an AMD 8 GB card
++		// ended at "failed to create image" without the out-of-video-memory message (#6), so the
++		// driver reported the full heap another way.
++		const auto memory_failure = [](vk::Result r) {
++			return r == vk::Result::eErrorOutOfDeviceMemory || r == vk::Result::eErrorOutOfHostMemory ||
++			       r == vk::Result::eErrorFragmentedPool || r == vk::Result::eErrorFragmentation;
++		};
+ 		auto result = allocate();
+-		if (result == vk::Result::eErrorOutOfDeviceMemory && NativeImagePoolEnabled()) {
++		if (memory_failure(result) && NativeImagePoolEnabled()) {
+ 			// Retained objects are optional. Release them before one allocation retry.
+ 			ClearRetiredImages();
+ 			result = allocate();
+ 		}
+-		if (result == vk::Result::eErrorOutOfDeviceMemory && ImageSystemMemoryFallbackEnabled()) {
++		if (memory_failure(result) && ImageSystemMemoryFallbackEnabled()) {
+ 			// From chenxiao07/KytyPS5 86910c0d2: out of video memory, the image goes to any memory
+ 			// type the driver allows for it (NVIDIA: system memory for optimal images). Slower to
+ 			// sample, but the game goes on instead of ending at "failed to create image".
+@@ -847,6 +968,10 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
+ 			}
+ 		}
+ 		if (result != vk::Result::eSuccess) {
++			std::fprintf(stderr, "Vulkan: image creation failed with %s: %ux%ux%u format=%d layers=%u levels=%u\n",
++			             vk::to_string(result).c_str(), image_info.extent.width, image_info.extent.height,
++			             image_info.extent.depth, static_cast<int>(image_info.format),
++			             image_info.arrayLayers, image_info.mipLevels);
+ 			LogMemoryBudget();
+ 			return false;
+ 		}
 diff --git a/src/graphics/presentation/cameraOverride.h b/src/graphics/presentation/cameraOverride.h
 new file mode 100644
 index 00000000..d5918b87
@@ -2478,10 +3740,10 @@ index 00000000..d5918b87
 +} // namespace Libs::Vr
 diff --git a/src/graphics/presentation/cameraTracking.h b/src/graphics/presentation/cameraTracking.h
 new file mode 100644
-index 00000000..8b31590b
+index 00000000..594ab01a
 --- /dev/null
 +++ b/src/graphics/presentation/cameraTracking.h
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,197 @@
 +#pragma once
 +#include "graphics/presentation/cameraOverride.h"
 +#include "graphics/presentation/vrInput.h"
@@ -2653,21 +3915,29 @@ index 00000000..8b31590b
 +	}
 +	return result;
 +}
-+inline CameraMatrix CameraTrackingPreviousRotation() {
-+	(void)CameraTrackingHeadTransform();
-+	auto result = camera_previous_head;
++struct TrackedCameraTransforms {
++	CameraMatrix head, current, previous;
++	uint64_t frame = ~uint64_t{0};
++};
++
++inline const TrackedCameraTransforms& CameraTrackingTransforms() {
++	// The head and both runtime eye poses are latched once per guest flip.
++	// Guest camera constants may still change between draws within that flip.
++	static thread_local std::array<TrackedCameraTransforms, 2> transforms {};
++	const auto eye = CameraRenderEye();
++	auto& result = transforms[eye];
++	const auto frame = camera_frame.load(std::memory_order_relaxed);
++	if (result.frame == frame) return result;
++	result.head = CameraTrackingHeadTransform();
++	result.current = result.head;
++	result.previous = camera_previous_head;
 +	if (FlatStereoEnabled()) {
-+		const auto& eye = camera_previous_pose.eyes[CameraRenderEye()];
-+		if (eye.valid) result = CameraMultiply(result, CameraEyeInverse(eye));
++		const auto& current = camera_frame_pose.eyes[eye];
++		const auto& previous = camera_previous_pose.eyes[eye];
++		if (current.valid) result.current = CameraMultiply(result.head, CameraEyeInverse(current));
++		if (previous.valid) result.previous = CameraMultiply(camera_previous_head, CameraEyeInverse(previous));
 +	}
-+	return result;
-+}
-+inline CameraMatrix CameraTrackingRotation() {
-+	auto result = CameraTrackingHeadTransform();
-+	if (FlatStereoEnabled()) {
-+		const auto& eye = camera_frame_pose.eyes[CameraRenderEye()];
-+		if (eye.valid) result = CameraMultiply(result, CameraEyeInverse(eye));
-+	}
++	result.frame = frame;
 +	return result;
 +}
 +} // namespace Libs::Vr
@@ -2751,17 +4021,18 @@ index 00000000..4822f0c4
 +
 +} // namespace Libs::Vr
 diff --git a/src/graphics/presentation/openxrHeadset.cpp b/src/graphics/presentation/openxrHeadset.cpp
-index bbfb9446..0f926c17 100644
+index bbfb9446..f518a1f1 100644
 --- a/src/graphics/presentation/openxrHeadset.cpp
 +++ b/src/graphics/presentation/openxrHeadset.cpp
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,7 @@
  #include "graphics/presentation/openxrHeadset.h"
++#include "graphics/presentation/stagingSelection.h"
 +#include "graphics/presentation/cameraTracking.h"
 +#include "graphics/presentation/physicsFaultCapture.h"
  
  #include "common/emulatorConfig.h"
  #include "common/logging/log.h"
-@@ -9,6 +11,7 @@
+@@ -9,11 +12,13 @@
  #include "graphics/host_gpu/renderer/renderContext.h"
  #include "graphics/presentation/vrInput.h"
  #include "libs/hmd2.h"
@@ -2769,12 +4040,20 @@ index bbfb9446..0f926c17 100644
  
  #define XR_USE_GRAPHICS_API_VULKAN
  #include <algorithm>
-@@ -56,8 +59,15 @@ constexpr int STAGING_COUNT = 3;
+ #include <atomic>
+ #include <chrono>
++#include <condition_variable>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+@@ -56,8 +61,17 @@ constexpr int STAGING_COUNT = 3;
  
  struct Staging {
  	VulkanImage image;
 +	vk::Extent2D content_extent {};
  	uint64_t    tick = 0;
++	uint64_t    sequence = 0;
++	MasterSemaphore* producer = nullptr;
 +	XrFovf flat_fov{};
 +    VrPose eye_heads[2];
 +    XrFovf eye_fovs[2]{};
@@ -2785,7 +4064,7 @@ index bbfb9446..0f926c17 100644
  };
  
  struct State {
-@@ -73,14 +83,24 @@ struct State {
+@@ -73,23 +87,37 @@ struct State {
  	PFN_xrGetVulkanGraphicsDeviceKHR       get_graphics_device = nullptr;
  
  	GraphicContext*  graphics = nullptr;
@@ -2798,7 +4077,8 @@ index bbfb9446..0f926c17 100644
  	// Headset thread only.
  	XrSessionState    session_state   = XR_SESSION_STATE_UNKNOWN;
  	bool              session_running = false;
- 	uint64_t          shown_tick      = 0;
+-	uint64_t          shown_tick      = 0;
++	uint64_t          shown_sequence  = 0;
  	VrPose            shown_head;
 +	bool              shown_pair = false;
 +	bool              shown_flat_screen = false;
@@ -2810,7 +4090,21 @@ index bbfb9446..0f926c17 100644
  	vk::CommandPool   pool;
  	vk::CommandBuffer command;
  	vk::Fence         fence;
-@@ -100,10 +120,23 @@ struct State {
++	bool              copy_pending = false; // Headset thread owns the fence and command buffer.
++	bool              async_copy = true;
+ 
+ 	std::mutex       mutex;
++	std::condition_variable source_published;
+ 	Staging          staging[STAGING_COUNT];
+ 	int              latest    = -1;
+ 	int              held      = -1;
+-	MasterSemaphore* semaphore = nullptr;
++	uint64_t         publication_sequence = 0;
++	std::atomic<uint64_t> produced_pairs {0};
+ 
+ 	XrActionSet action_set = XR_NULL_HANDLE;
+ 	XrAction    actions[ACTION_COUNT] {};
+@@ -100,10 +128,23 @@ struct State {
  	VrControllerInput input[2];
  	VrPose            head;
  	VrPose            last_head_read;
@@ -2834,7 +4128,7 @@ index bbfb9446..0f926c17 100644
  bool Ok(XrResult result, const char* what) {
  	if (XR_SUCCEEDED(result)) {
  		return true;
-@@ -306,6 +339,23 @@ bool CreateInput() {
+@@ -306,6 +347,23 @@ bool CreateInput() {
  // The head is tracked while the frame loop runs; the controllers only while the session has focus.
  void PollInput(XrTime time) {
  	const auto        head = Locate(g.view_space, time);
@@ -2858,7 +4152,7 @@ index bbfb9446..0f926c17 100644
  	VrControllerInput input[2];
  	XrActiveActionSet active {g.action_set, XR_NULL_PATH};
  	XrActionsSyncInfo sync {XR_TYPE_ACTIONS_SYNC_INFO};
-@@ -350,6 +400,8 @@ void PollInput(XrTime time) {
+@@ -350,6 +408,8 @@ void PollInput(XrTime time) {
  	}
  	std::lock_guard lock(g.input_mutex);
  	g.head     = head;
@@ -2867,7 +4161,7 @@ index bbfb9446..0f926c17 100644
  	g.input[0] = input[0];
  	g.input[1] = input[1];
  }
-@@ -389,11 +441,11 @@ void HandleEvents() {
+@@ -389,11 +449,11 @@ void HandleEvents() {
  	}
  }
  
@@ -2881,7 +4175,7 @@ index bbfb9446..0f926c17 100644
  		if (!Ok(xrAcquireSwapchainImage(g.swapchain, &acquire, &image), "acquire")) {
  			return false;
  		}
-@@ -407,35 +459,44 @@ bool CopyToSwapchain(const VulkanImage& staging) {
+@@ -407,64 +467,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
  		vk::CommandBufferBeginInfo begin {};
  		begin.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
  		(void)g.command.begin(&begin);
@@ -2922,10 +4216,20 @@ index bbfb9446..0f926c17 100644
 -			result = g.graphics->queue.submit(1, &submit, g.fence);
 +			Common::LockGuard queue_lock(XrQueueMutex());
 +			result = XrQueue().submit(1, &submit, g.fence);
++		}
++		copied = result == vk::Result::eSuccess;
++		// The copy and final layout transition are submitted on the Vulkan queue
++		// bound to this XR session. Keep our source and command buffer pinned
++		// until the fence signals, while the runtime schedules presentation.
++		g.copy_pending = copied;
++		if (copied && !g.async_copy) {
++			copied = g.graphics->device.waitForFences(1, &g.fence, VK_TRUE, UINT64_MAX) ==
++			         vk::Result::eSuccess;
++			g.copy_pending = !copied;
  		}
- 		copied = result == vk::Result::eSuccess &&
- 		         g.graphics->device.waitForFences(1, &g.fence, VK_TRUE, UINT64_MAX) ==
- 		             vk::Result::eSuccess;
+-		copied = result == vk::Result::eSuccess &&
+-		         g.graphics->device.waitForFences(1, &g.fence, VK_TRUE, UINT64_MAX) ==
+-		             vk::Result::eSuccess;
  	}
  	XrSwapchainImageReleaseInfo release {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
 -	Common::LockGuard           queue_lock(g.graphics->queue_mutex);
@@ -2933,14 +4237,57 @@ index bbfb9446..0f926c17 100644
  	return Ok(xrReleaseSwapchainImage(g.swapchain, &release), "release") && copied;
  }
  
-@@ -456,9 +517,16 @@ bool UpdateSwapchain() {
+-// Holds the newest recorded eye image until the GPU has finished it, without waiting, then copies
+-// it into the swapchain. The swapchain keeps the last copy, so frames in between show it again.
++bool RetireSwapchainCopy() {
++	if (!g.copy_pending) return true;
++	const auto status = g.graphics->device.getFenceStatus(g.fence);
++	if (status == vk::Result::eNotReady) return false;
++	if (status != vk::Result::eSuccess) {
++		Log::WriteToConsoleAndLog(fmt::format("OpenXR: headset copy fence failed: {}\n", vk::to_string(status)));
++		g.running = false;
++		return false;
++	}
++	std::lock_guard lock(g.mutex);
++	g.held = -1;
++	g.copy_pending = false;
++	return true;
++}
++
++// Prefer the newest finished pair. Pin a pending source when the producer is ahead.
+ bool UpdateSwapchain() {
++	if (!RetireSwapchainCopy()) return g.shown_sequence != 0;
+ 	int              index     = -1;
+ 	MasterSemaphore* semaphore = nullptr;
+ 	{
+ 		std::lock_guard lock(g.mutex);
+-		if (g.held < 0 && g.latest >= 0 && g.staging[g.latest].tick != g.shown_tick) {
+-			g.held = g.latest;
+-		}
+-		index     = g.held;
+-		semaphore = g.semaphore;
++		if (g.latest < 0 || g.staging[g.latest].sequence <= g.shown_sequence) return g.shown_sequence != 0;
++		auto& latest = g.staging[g.latest];
++		if (!latest.producer->IsFree(latest.tick)) semaphore = latest.producer;
++	}
++	// Driver calls stay outside the lock shared with the guest render thread.
++	if (semaphore) semaphore->Refresh();
++	{
++		std::lock_guard lock(g.mutex);
++		g.held = SelectSource(g.staging, g.held, g.shown_sequence);
++		index = g.held;
+ 	}
+ 	if (index >= 0) {
  		const auto& slot = g.staging[index];
- 		semaphore->Refresh();
- 		if (semaphore->IsFree(slot.tick)) {
+-		semaphore->Refresh();
+-		if (semaphore->IsFree(slot.tick)) {
 -			if (CopyToSwapchain(slot.image)) {
-+			if (CopyToSwapchain(slot, *semaphore)) {
+-				g.shown_tick = slot.tick;
++		if (slot.producer != semaphore && !slot.producer->IsFree(slot.tick)) slot.producer->Refresh();
++		if (slot.producer->IsFree(slot.tick)) {
++			if (CopyToSwapchain(slot, *slot.producer)) {
 +				g.shown_extent = slot.content_extent;
- 				g.shown_tick = slot.tick;
++				g.shown_sequence = slot.sequence;
  				g.shown_head = slot.head;
 +				g.shown_pair = slot.paired;
 +				g.shown_flat_screen = slot.flat_screen;
@@ -2948,11 +4295,26 @@ index bbfb9446..0f926c17 100644
 +					g.shown_rendered_eyes[eye] = slot.rendered_eyes[eye];
 +                g.shown_flat_fov = slot.flat_fov;
 +                for(int i=0;i<2;++i){g.shown_eye_heads[i]=slot.eye_heads[i];g.shown_eye_fovs[i]=slot.eye_fovs[i];}
++			}
++			if (!g.copy_pending) {
++				std::lock_guard lock(g.mutex);
++				g.held = -1;
  			}
- 			std::lock_guard lock(g.mutex);
- 			g.held = -1;
-@@ -482,9 +550,6 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
- 	    XR_SUCCEEDED(xrLocateViews(g.session, &locate, &state, 2, &count, located)) &&
+-			std::lock_guard lock(g.mutex);
+-			g.held = -1;
+ 		}
+ 	}
+-	return g.shown_tick != 0;
++	return g.shown_sequence != 0;
+ }
+ 
+ // The game drew the picture for the head pose it read, so it is placed in the world at that pose
+@@ -479,12 +584,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+ 	XrView      located[2] {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+ 	uint32_t    count = 0;
+ 	const bool  valid =
+-	    XR_SUCCEEDED(xrLocateViews(g.session, &locate, &state, 2, &count, located)) &&
++	    !g.shown_pair && XR_SUCCEEDED(xrLocateViews(g.session, &locate, &state, 2, &count, located)) &&
  	    (state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
  	const auto&         head = g.shown_head;
 -	const XrQuaternionf head_q {head.orientation[0], head.orientation[1], head.orientation[2],
@@ -2961,7 +4323,7 @@ index bbfb9446..0f926c17 100644
  	// The outer side of each eye is its temporal side: left for the left eye.
  	const float out    = std::atan(Hmd2::FOV_TAN_OUT);
  	const float in     = std::atan(Hmd2::FOV_TAN_IN);
-@@ -494,15 +559,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -494,15 +596,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  		const float side = eye == 0 ? -Hmd2::EYE_OFFSET_M : Hmd2::EYE_OFFSET_M;
  		auto&       view = views[eye];
  		view.pose        = valid ? located[eye].pose : XrPosef {{0, 0, 0, 1}, {side, 0, 0}};
@@ -2993,7 +4355,7 @@ index bbfb9446..0f926c17 100644
  		view.subImage.imageArrayIndex = static_cast<uint32_t>(eye);
  	}
  	layer.space     = head.valid ? g.local_space : g.view_space;
-@@ -511,18 +588,62 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -511,18 +625,78 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  }
  
  void ThreadMain() {
@@ -3010,43 +4372,59 @@ index bbfb9446..0f926c17 100644
 +	std::array<Timing, 4> timings; // Runtime wait, source readiness, image copy, layer submission.
 +	auto report_time = std::chrono::steady_clock::now();
 +	uint64_t fresh_pairs = 0, repeated_sources = 0, submissions = 0;
++	uint64_t copies_still_pending = 0;
++	uint64_t last_submitted = 0;
++	XrTime last_fresh_display_time = 0;
++	std::vector<double> pair_intervals_ms;
++	pair_intervals_ms.reserve(1500);
++	auto previous_produced = g.produced_pairs.load(std::memory_order_relaxed);
  	while (g.running) {
  		HandleEvents();
  		XrFrameWaitInfo wait {XR_TYPE_FRAME_WAIT_INFO};
  		XrFrameState    frame {XR_TYPE_FRAME_STATE};
 +		const auto wait_start = std::chrono::steady_clock::now();
  		if (!g.session_running || !Ok(xrWaitFrame(g.session, &wait, &frame), "xrWaitFrame")) {
++			last_fresh_display_time = 0;
  			std::this_thread::sleep_for(std::chrono::milliseconds(50));
  			continue;
  		}
 +		timings[0].Add(wait_start);
++		if (!frame.shouldRender) last_fresh_display_time = 0;
 +		const auto ready_start = std::chrono::steady_clock::now();
-+		if (g.frame_generation_layer && frame.shouldRender && g.shown_pair && !g.shown_flat_screen) {
++		const bool copy_ready = RetireSwapchainCopy();
++		if (!copy_ready && frame.shouldRender) ++copies_still_pending;
++		if (g.frame_generation_layer && frame.shouldRender && g.shown_pair && !g.shown_flat_screen &&
++		    copy_ready) {
 +			// Let the runtime's pacing wait overlap the source GPU work first.
 +			// Waiting for completion before xrWaitFrame serializes both waits
 +			// and can add whole refresh intervals under load. Only give a
 +			// nearly ready source 2 ms here; the bridge/compositor retains the
 +			// previous pair during longer game stalls. Never hold a queue lock.
 +			const auto deadline = ready_start + std::chrono::milliseconds(2);
-+			while (g.running && g.session_running && std::chrono::steady_clock::now() < deadline) {
-+				MasterSemaphore* semaphore = nullptr;
-+				uint64_t tick = 0;
-+				{
-+					std::lock_guard lock(g.mutex);
-+					if (g.held < 0 && g.latest >= 0 && g.staging[g.latest].tick != g.shown_tick)
-+						g.held = g.latest;
-+					if (g.held >= 0) {
-+						tick = g.staging[g.held].tick;
-+						semaphore = g.semaphore;
++			std::unique_lock lock(g.mutex);
++			g.source_published.wait_until(lock, deadline, [&] {
++				return !g.running || g.held >= 0 ||
++				       (g.latest >= 0 && g.staging[g.latest].sequence > g.shown_sequence);
++			});
++			if (!g.running) break;
++			g.held = SelectSource(g.staging, g.held, g.shown_sequence);
++			if (g.held >= 0) {
++				const auto tick = g.staging[g.held].tick;
++				auto* producer = g.staging[g.held].producer;
++				lock.unlock();
++				const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
++				    deadline - std::chrono::steady_clock::now()).count();
++				if (remaining > 0 && !producer->IsFree(tick)) {
++					const auto handle = producer->Handle();
++					const vk::SemaphoreWaitInfo info{.semaphoreCount = 1, .pSemaphores = &handle, .pValues = &tick};
++					const auto result = g.graphics->device.waitSemaphores(&info, static_cast<uint64_t>(remaining));
++					if (result != vk::Result::eSuccess && result != vk::Result::eTimeout) {
++						Log::WriteToConsoleAndLog(fmt::format("OpenXR: source timeline wait failed: {}\n", vk::to_string(result)));
++						g.running = false;
++						break;
 +					}
 +				}
-+				if (semaphore != nullptr) {
-+					semaphore->Refresh();
-+					if (semaphore->IsFree(tick)) break;
-+				}
-+				std::this_thread::sleep_for(std::chrono::microseconds(250));
 +			}
-+			if (!g.running) break;
 +		}
 +		timings[1].Add(ready_start);
  		PollInput(frame.predictedDisplayTime);
@@ -3057,7 +4435,7 @@ index bbfb9446..0f926c17 100644
  			if (!Ok(xrBeginFrame(g.session, &begin), "xrBeginFrame")) {
  				continue;
  			}
-@@ -530,17 +651,64 @@ void ThreadMain() {
+@@ -530,17 +704,86 @@ void ThreadMain() {
  		XrCompositionLayerProjection     layer {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
  		XrCompositionLayerProjectionView views[2] {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
  		                                           {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
@@ -3069,16 +4447,10 @@ index bbfb9446..0f926c17 100644
  		end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 -		if (frame.shouldRender == XR_TRUE && UpdateSwapchain()) {
 -			PlaceViews(frame.predictedDisplayTime, layer, views);
-+		const auto previous_tick = g.shown_tick;
 +		const auto copy_start = std::chrono::steady_clock::now();
 +		const bool have_image = frame.shouldRender == XR_TRUE && UpdateSwapchain();
 +		timings[2].Add(copy_start);
 +		if (have_image) {
-+			if (g.shown_tick != previous_tick) {
-+				if (g.shown_pair) ++fresh_pairs;
-+			} else {
-+				++repeated_sources;
-+			}
 +			if (g.shown_flat_screen) {
 +				// Let the compositor project a single plane for both eyes
 +				// at a comfortable, finite distance.
@@ -3101,7 +4473,19 @@ index bbfb9446..0f926c17 100644
 +		const auto submit_start = std::chrono::steady_clock::now();
 +		{
 +			Common::LockGuard queue_lock(XrQueueMutex());
-+			if (Ok(xrEndFrame(g.session, &end), "xrEndFrame") && end.layerCount) ++submissions;
++			if (Ok(xrEndFrame(g.session, &end), "xrEndFrame") && end.layerCount) {
++				++submissions;
++				if (last_submitted == g.shown_sequence) ++repeated_sources;
++				else if (g.shown_pair) {
++					++fresh_pairs;
++					if (!g.shown_flat_screen && last_fresh_display_time > 0 &&
++					    frame.predictedDisplayTime > last_fresh_display_time) {
++						pair_intervals_ms.push_back((frame.predictedDisplayTime - last_fresh_display_time) / 1.0e6);
++					}
++					last_fresh_display_time = g.shown_flat_screen ? 0 : frame.predictedDisplayTime;
++				} else last_fresh_display_time = 0;
++				last_submitted = g.shown_sequence;
++			}
 +		}
 +		timings[3].Add(submit_start);
 +		const auto now = std::chrono::steady_clock::now();
@@ -3112,15 +4496,31 @@ index bbfb9446..0f926c17 100644
 +			    "frame generation {} (generated display rate must be measured by the bridge)\n",
 +			    fresh_pairs / seconds, submissions / seconds, repeated_sources,
 +			    g.frame_generation_layer ? "delegated to OFXR" : "off"));
-+			if (g.frame_generation_layer) {
++			const auto produced = g.produced_pairs.load(std::memory_order_relaxed);
++			Log::WriteToConsoleAndLog(fmt::format("VR producer: {:.1f} same-frame pairs queued/s\n",
++			    (produced - previous_produced) / seconds));
++			previous_produced = produced;
++			if (!pair_intervals_ms.empty()) {
++				std::sort(pair_intervals_ms.begin(), pair_intervals_ms.end());
++				const auto n = pair_intervals_ms.size();
++				Log::WriteToConsoleAndLog(fmt::format(
++				    "OpenXR fresh gameplay pair intervals ms: median {:.2f}, p95 {:.2f}, max {:.2f} ({} gaps)\n",
++				    pair_intervals_ms[(n - 1) / 2], pair_intervals_ms[(95 * n - 1) / 100],
++				    pair_intervals_ms.back(), n));
++				pair_intervals_ms.clear();
++			}
++			if (submissions || g.frame_generation_layer) {
 +				Log::WriteToConsoleAndLog(fmt::format(
 +				    "OpenXR timing ms mean/max: runtime wait {:.2f}/{:.2f}, source readiness {:.2f}/{:.2f}, "
-+				    "image copy/release {:.2f}/{:.2f}, frame submission {:.2f}/{:.2f}\n",
++				    "image copy/release {:.2f}/{:.2f}, frame submission {:.2f}/{:.2f}, "
++				    "prior copy pending at frame start {}\n",
 +				    timings[0].Mean(), timings[0].maximum, timings[1].Mean(), timings[1].maximum,
-+				    timings[2].Mean(), timings[2].maximum, timings[3].Mean(), timings[3].maximum));
++				    timings[2].Mean(), timings[2].maximum, timings[3].Mean(), timings[3].maximum,
++				    copies_still_pending));
 +			}
 +			timings = {};
 +			fresh_pairs = repeated_sources = submissions = 0;
++			copies_still_pending = 0;
 +			report_time = now;
  		}
 -		Common::LockGuard queue_lock(g.graphics->queue_mutex);
@@ -3128,7 +4528,7 @@ index bbfb9446..0f926c17 100644
  	}
  }
  
-@@ -550,6 +718,7 @@ void OpenXrInit() {
+@@ -550,6 +793,7 @@ void OpenXrInit() {
  	if (!Config::VrEnabled()) {
  		return;
  	}
@@ -3136,7 +4536,7 @@ index bbfb9446..0f926c17 100644
  	if (const char* env = std::getenv("KYTY_OPENXR");
  	    env != nullptr && std::strcmp(env, "0") == 0) {
  		return;
-@@ -561,6 +730,33 @@ void OpenXrInit() {
+@@ -561,6 +805,33 @@ void OpenXrInit() {
  	info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
  	info.enabledExtensionCount      = 1;
  	info.enabledExtensionNames      = extensions;
@@ -3170,7 +4570,7 @@ index bbfb9446..0f926c17 100644
  	if (XR_FAILED(xrCreateInstance(&info, &g.instance))) {
  		DestroyInstance("no runtime available");
  		return;
-@@ -602,6 +798,64 @@ void OpenXrInit() {
+@@ -602,6 +873,64 @@ void OpenXrInit() {
  	xrEnumerateViewConfigurationViews(g.instance, g.system,
  	                                  XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &count, views);
  	g.eye = {views[0].recommendedImageRectWidth, views[0].recommendedImageRectHeight};
@@ -3235,7 +4635,7 @@ index bbfb9446..0f926c17 100644
  	XrSystemProperties properties {XR_TYPE_SYSTEM_PROPERTIES};
  	xrGetSystemProperties(g.instance, g.system, &properties);
  	Log::WriteToConsoleAndLog(fmt::format("OpenXR: headset '{}' ready\n", properties.systemName));
-@@ -620,6 +874,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
+@@ -620,6 +949,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
  			out.push_back(name.c_str());
  		}
  	}
@@ -3264,7 +4664,7 @@ index bbfb9446..0f926c17 100644
  }
  
  bool OpenXrPhysicalDevice(vk::Instance instance, vk::PhysicalDevice& out) {
-@@ -645,12 +921,39 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -645,12 +996,39 @@ void OpenXrStartSession(GraphicContext& graphics) {
  		return;
  	}
  	g.graphics = &graphics;
@@ -3305,7 +4705,28 @@ index bbfb9446..0f926c17 100644
  	XrSessionCreateInfo info {XR_TYPE_SESSION_CREATE_INFO};
  	info.next     = &binding;
  	info.systemId = g.system;
-@@ -695,7 +998,7 @@ void OpenXrShutdown() {
+@@ -680,6 +1058,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
+ 	(void)graphics.device.allocateCommandBuffers(&allocate, &g.command);
+ 	vk::FenceCreateInfo fence {};
+ 	(void)graphics.device.createFence(&fence, nullptr, &g.fence);
++	const auto* async_copy = std::getenv("ASTROHYBRID_VR_ASYNC_COPY");
++	g.async_copy = !async_copy || std::strcmp(async_copy, "0") != 0;
++	Log::WriteToConsoleAndLog(fmt::format("OpenXR: headset copy fence {}\n",
++	    g.async_copy ? "deferred until staging reuse" : "waited before release"));
+ 
+ 	g.running = true;
+ 	g.thread  = std::thread(ThreadMain);
+@@ -687,18 +1069,27 @@ void OpenXrStartSession(GraphicContext& graphics) {
+ 
+ void OpenXrShutdown() {
+ 	g.running = false;
++	g.source_published.notify_one();
+ 	if (g.thread.joinable()) {
+ 		g.thread.join();
+ 	}
+-	DestroyInstance(nullptr);
+ 	if (g.graphics == nullptr) {
++		DestroyInstance(nullptr);
  		return;
  	}
  	{
@@ -3313,8 +4734,19 @@ index bbfb9446..0f926c17 100644
 +		Common::LockGuard queue_lock(XrQueueMutex());
  		(void)g.graphics->device.waitIdle();
  	}
++	DestroyInstance(nullptr);
++	g.copy_pending = false;
++	g.held = -1;
++	g.latest = -1;
++	g.shown_sequence = 0;
++	g.publication_sequence = 0;
  	for (auto& slot: g.staging) {
-@@ -708,6 +1011,44 @@ void OpenXrShutdown() {
++		slot.sequence = 0;
++		slot.producer = nullptr;
+ 		if (slot.image.image != nullptr) {
+ 			g.graphics->DeleteImage(slot.image);
+ 		}
+@@ -708,6 +1099,44 @@ void OpenXrShutdown() {
  	g.graphics = nullptr;
  }
  
@@ -3359,9 +4791,15 @@ index bbfb9446..0f926c17 100644
  VrPose OpenXrGetHeadPose() {
  	if (!g.running) {
  		return {};
-@@ -737,6 +1078,9 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
- 		index++;
+@@ -732,11 +1161,11 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+ 		return;
  	}
+ 	std::lock_guard lock(g.mutex);
+-	int             index = 0;
+-	while (index == g.held || index == g.latest) {
+-		index++;
+-	}
++	const int index = SelectWriteSlot(g.staging, g.latest, g.held);
  	auto&      slot       = g.staging[index];
 +	slot.paired = false;
 +	slot.flat_screen = false;
@@ -3369,7 +4807,7 @@ index bbfb9446..0f926c17 100644
  	const auto vk_command = command.Handle();
  	Barrier(vk_command, slot.image.image, vk::ImageLayout::eUndefined,
  	        vk::ImageLayout::eTransferDstOptimal, 1, TRANSFER, TRANSFER_WRITE);
-@@ -747,8 +1091,42 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+@@ -747,16 +1176,161 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
  	blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
  	blit.dstOffsets[1]  = vk::Offset3D {static_cast<int32_t>(slot.image.extent.width),
  	                                    static_cast<int32_t>(slot.image.extent.height), 1};
@@ -3412,8 +4850,12 @@ index bbfb9446..0f926c17 100644
  	Barrier(vk_command, slot.image.image, vk::ImageLayout::eTransferDstOptimal,
  	        vk::ImageLayout::eTransferSrcOptimal, 1, TRANSFER_WRITE, TRANSFER_READ);
  	auto& scheduler = command.GetContext().GetCommandScheduler();
-@@ -757,6 +1135,113 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+ 	slot.tick       = scheduler.CurrentTick();
+-	g.semaphore     = &scheduler.GetMasterSemaphore();
++	slot.producer = &scheduler.GetMasterSemaphore();
++	slot.sequence = ++g.publication_sequence;
  	g.latest        = index;
++	g.source_published.notify_one();
  	std::lock_guard input_lock(g.input_mutex);
  	slot.head = g.last_head_read;
 +    slot.flat_fov = g.flat_fov;
@@ -3436,7 +4878,7 @@ index bbfb9446..0f926c17 100644
 +}
 +
 +bool OpenXrQueueStereoPair(CommandBuffer& command, const VulkanImage& left,
-+                           const VulkanImage& right, const StereoFrame& frame) {
++                           const VulkanImage& right, const StereoFrameMetadata& frame) {
 +	if (!g.running || !FlatStereoEnabled() || command.IsInvalid() ||
 +	    !left.image || !right.image || left.image == right.image ||
 +	    left.extent.width == 0 || left.extent.height == 0 || left.extent != right.extent)
@@ -3449,8 +4891,7 @@ index bbfb9446..0f926c17 100644
 +		if (!(fov[0] < fov[1] && fov[3] < fov[2])) return false;
 +	}
 +	std::lock_guard lock(g.mutex);
-+	int index = 0;
-+	while (index == g.held || index == g.latest) ++index;
++	const int index = SelectWriteSlot(g.staging, g.latest, g.held);
 +	auto& slot = g.staging[index];
 +	const auto vk_command = command.Handle();
 +	Barrier(vk_command, slot.image.image, vk::ImageLayout::eUndefined,
@@ -3519,22 +4960,25 @@ index bbfb9446..0f926c17 100644
 +	slot.flat_fov = slot.eye_fovs[0];
 +	slot.paired = true;
 +	slot.flat_screen = frame.flat_screen;
-+	g.semaphore = &scheduler.GetMasterSemaphore();
++	slot.producer = &scheduler.GetMasterSemaphore();
++	slot.sequence = ++g.publication_sequence;
++	g.produced_pairs.fetch_add(1, std::memory_order_relaxed);
 +	// Both copies and their pose/FOV metadata become visible together.
 +	g.latest = index;
++	g.source_published.notify_one();
 +	return true;
  }
  
  } // namespace Libs::Vr
 diff --git a/src/graphics/presentation/openxrHeadset.h b/src/graphics/presentation/openxrHeadset.h
-index 6111ea3b..6215baff 100644
+index 6111ea3b..ad222966 100644
 --- a/src/graphics/presentation/openxrHeadset.h
 +++ b/src/graphics/presentation/openxrHeadset.h
 @@ -15,6 +15,8 @@ class CommandBuffer;
  // enabled (--vr) and an OpenXR runtime with a headset is available; KYTY_OPENXR=0 turns it off.
  namespace Libs::Vr {
  
-+struct StereoFrame;
++struct StereoFrameMetadata;
 +
  // Creates the OpenXR instance. Call before the Vulkan instance exists, because the runtime names
  // the Vulkan extensions and the GPU it needs.
@@ -3543,23 +4987,23 @@ index 6111ea3b..6215baff 100644
  // headset thread. The source is in transfer-source layout.
  void OpenXrQueueEyeSource(Graphics::CommandBuffer& command, const Graphics::VulkanImage& source);
  
-+// Both images must be independently rendered from frame.cameras in the same guest
++// Both images must be independently rendered from their cameras in the same guest
 +// frame, in transfer-source layout, on command's producer timeline. Publication is
 +// atomic: no old-eye image is carried over. Does not generate the eye renders.
 +bool OpenXrQueueStereoPair(Graphics::CommandBuffer& command,
 +                          const Graphics::VulkanImage& left,
 +                          const Graphics::VulkanImage& right,
-+                          const StereoFrame& frame);
++                          const StereoFrameMetadata& frame);
 +
  } // namespace Libs::Vr
  
  #endif // EMULATOR_SRC_GRAPHICS_PRESENTATION_OPENXRHEADSET_H_
 diff --git a/src/graphics/presentation/stereoFrame.h b/src/graphics/presentation/stereoFrame.h
 new file mode 100644
-index 00000000..b6b33bc2
+index 00000000..f28d6af9
 --- /dev/null
 +++ b/src/graphics/presentation/stereoFrame.h
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,131 @@
 +#pragma once
 +
 +#include "graphics/presentation/cameraTracking.h"
@@ -3574,18 +5018,21 @@ index 00000000..b6b33bc2
 +
 +// Render inputs, not a displayed image. Ownership is by value so later game uploads
 +// and tracking polls cannot change either eye while its commands are being recorded.
-+struct StereoFrame {
++struct StereoFrameMetadata {
 +	uint64_t id = 0;
 +	VrFramePose pose;
-+	std::array<CameraBlock, 2> cameras;
 +	// OpenXR order: left, right, up, down. Kept with the rendered frame.
 +	std::array<std::array<float, 4>, 2> fovs;
 +	bool headset_projection = false;
 +	bool flat_screen = false;
 +};
 +
++struct StereoFrame : StereoFrameMetadata {
++	std::array<CameraBlock, 2> cameras;
++};
++
 +// GPU resolver thread only; the headset thread receives a value copy in its staging slot.
-+inline std::optional<StereoFrame> active_stereo_frame;
++inline std::optional<StereoFrameMetadata> active_stereo_frame;
 +
 +inline bool ValidStereoPose(const VrPose& pose) {
 +	if (!pose.valid) return false;
@@ -3747,10 +5194,10 @@ index f1b13f4d..7521fe7f 100644
  // Latest state of the left (0) or right (1) controller. While it is not connected the caller keeps
  // using the keyboard or gamepad.
 diff --git a/src/graphics/presentation/window/hostInput.cpp b/src/graphics/presentation/window/hostInput.cpp
-index 10ea3afc..028e85df 100644
+index 10ea3afc..67cdebea 100644
 --- a/src/graphics/presentation/window/hostInput.cpp
 +++ b/src/graphics/presentation/window/hostInput.cpp
-@@ -8,6 +8,7 @@
+@@ -8,12 +8,14 @@
  #include "common/hostInputTrace.h"
  #include "common/logging/log.h"
  #include "libs/controller.h"
@@ -3758,7 +5205,48 @@ index 10ea3afc..028e85df 100644
  
  #include <algorithm>
  #include <array>
-@@ -797,6 +798,10 @@ void HostInputShutdown() {
+ #include <cmath>
+ #include <cstddef>
+ #include <cstdlib>
++#include <cstring>
+ #include <mutex>
+ #include <string>
+ #include <string_view>
+@@ -640,14 +642,31 @@ std::array<int, 2> GamepadLeftStick(int id) {
+ 	return {value(SDL_GAMEPAD_AXIS_LEFTX), value(SDL_GAMEPAD_AXIS_LEFTY)};
+ }
+ 
++// A pad's GyroToggle button (View/Back by default) tilts only while it is held. As a toggle, one
++// accidental press of View left the right stick driving the tilt instead of the camera, with no sign
++// on screen: "the right stick stops working, restarting fixes it" (pcportastrobot #128).
++// ASTROHYBRID_TILT_TOGGLE=1 restores the press-to-toggle behaviour.
++bool PadTiltIsToggle() {
++	static const bool toggle = [] {
++		const auto* value = std::getenv("ASTROHYBRID_TILT_TOGGLE");
++		return value != nullptr && std::strcmp(value, "1") == 0;
++	}();
++	return toggle;
++}
++
+ void ApplyPadControl(int id, std::size_t control, std::size_t source, bool down) {
+ 	if (control == INVALID_CONTROL) {
+ 		return;
+ 	}
+ 	const auto& info = CONTROL_INFO[control];
+ 	if (info.gyro) {
+-		if (down) {
+-			Controller::ToggleGyroEmulation(id);
++		if (PadTiltIsToggle()) {
++			if (down) {
++				Controller::ToggleGyroEmulation(id);
++			}
++		} else {
++			Common::HostInputTrace("tilt-hold", id, down ? 1 : 0);
++			Controller::SetGyroEmulation(id, down);
+ 		}
+ 	} else if (info.touchpad_mode) {
+ 		if (down) {
+@@ -797,6 +816,10 @@ void HostInputShutdown() {
  }
  
  void HostInputKey(int key_code, bool down) {
@@ -3769,8 +5257,86 @@ index 10ea3afc..028e85df 100644
  	Common::HostInputTrace("host-key", key_code, down);
  	g_input_pulse.Key(key_code, down, SDL_GetTicks(), ApplyHostKey);
  }
+@@ -1037,6 +1060,28 @@ void HostInputToggleMouseToJoystick() {
+ 	LOGF("Mouse to right stick: enabled (F7 to release)\n");
+ }
+ 
++static void FinishHostEvent(SDL_Event* event, bool has_event) {
++	if (Config::HideCursorEnabled() && !TouchPadModeActive()) {
++		const auto now_ms = SDL_GetTicks();
++		if (has_event && !g_mouse.enabled && IsCursorActivity(*event) &&
++		    SDL_GetWindowFromEvent(event) == g_mouse_window) {
++			SDL_ShowCursor();
++			g_cursor_hide_at = now_ms + CURSOR_IDLE_HIDE_MS;
++		} else if (g_cursor_hide_at != 0 && now_ms >= g_cursor_hide_at) {
++			SDL_HideCursor();
++			g_cursor_hide_at = 0;
++		}
++	}
++
++	if (has_event && event->type == SDL_EVENT_WINDOW_FOCUS_LOST &&
++	    event->window.windowID == SDL_GetWindowID(g_mouse_window)) {
++		Common::HostInputTrace("focus-lost", 0, 0);
++		g_input_pulse.ReleaseAll(ApplyHostKey);
++		g_mouse.next_poll = 0;
++		CenterMouseStick();
++	}
++}
++
+ bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
+ 	// -1 waits without a deadline (until max_wait_ms below).
+ 	int timeout = g_input_pulse.Poll(SDL_GetTicks(), ApplyHostKey);
+@@ -1067,26 +1112,18 @@ bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
+ 		EXIT("%s\n", SDL_GetError());
+ 	}
+ 
+-	if (Config::HideCursorEnabled() && !TouchPadModeActive()) {
+-		const auto now_ms = SDL_GetTicks();
+-		if (has_event && !g_mouse.enabled && IsCursorActivity(*event) &&
+-		    SDL_GetWindowFromEvent(event) == g_mouse_window) {
+-			SDL_ShowCursor();
+-			g_cursor_hide_at = now_ms + CURSOR_IDLE_HIDE_MS;
+-		} else if (g_cursor_hide_at != 0 && now_ms >= g_cursor_hide_at) {
+-			SDL_HideCursor();
+-			g_cursor_hide_at = 0;
+-		}
+-	}
++	FinishHostEvent(event, has_event);
++	return has_event;
++}
+ 
+-	if (has_event && event->type == SDL_EVENT_WINDOW_FOCUS_LOST &&
+-	    event->window.windowID == SDL_GetWindowID(g_mouse_window)) {
+-		Common::HostInputTrace("focus-lost", 0, 0);
+-		g_input_pulse.ReleaseAll(ApplyHostKey);
+-		g_mouse.next_poll = 0;
+-		CenterMouseStick();
++bool HostInputDrainEvent(SDL_Event* event) {
++	// Pop already-pumped events without invoking SDL_WaitEventTimeout(..., 0), which would re-pump
++	// Windows/HID devices for every high-rate gyro/accel sample during Switch Pro or PS5 bursts.
++	if (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) <= 0) {
++		return false;
+ 	}
+-	return has_event;
++	FinishHostEvent(event, true);
++	return true;
+ }
+ 
+ } // namespace Libs::Graphics
+diff --git a/src/graphics/presentation/window/hostInput.h b/src/graphics/presentation/window/hostInput.h
+index 53e94640..eae937e4 100644
+--- a/src/graphics/presentation/window/hostInput.h
++++ b/src/graphics/presentation/window/hostInput.h
+@@ -37,6 +37,7 @@ void               HostInputDisconnectGamepadTouchPad(int id);
+ [[nodiscard]] HostInputTouchPadVisualState GetHostInputTouchPadVisualState();
+ void               HostInputToggleMouseToJoystick();
+ [[nodiscard]] bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms);
++[[nodiscard]] bool HostInputDrainEvent(SDL_Event* event);
+ 
+ } // namespace Libs::Graphics
+ 
 diff --git a/src/graphics/presentation/window/swapchain.cpp b/src/graphics/presentation/window/swapchain.cpp
-index caa9055e..57b60230 100644
+index caa9055e..b9f6961c 100644
 --- a/src/graphics/presentation/window/swapchain.cpp
 +++ b/src/graphics/presentation/window/swapchain.cpp
 @@ -14,6 +14,8 @@
@@ -3925,7 +5491,7 @@ index caa9055e..57b60230 100644
 +		}
 +		frame->Transit(buffer.Handle(), vk::ImageLayout::eTransferSrcOptimal,
 +		               vk::AccessFlagBits2::eTransferRead);
-+		Vr::StereoFrame metadata;
++		Vr::StereoFrameMetadata metadata;
 +		if (Vr::active_stereo_frame && Vr::active_stereo_frame->id == Vr::camera_frame.load()) {
 +			metadata = *Vr::active_stereo_frame;
 +		} else {
@@ -4005,6 +5571,100 @@ index 21165e69..6c9d00e1 100644
  	if (graphic_ctx.transfer_queue_family != static_cast<uint32_t>(-1)) {
  		graphic_ctx.device.getQueue(graphic_ctx.transfer_queue_family, 0,
  		                            &graphic_ctx.transfer_queue);
+diff --git a/src/graphics/presentation/window/window.cpp b/src/graphics/presentation/window/window.cpp
+index ae017617..20a35ec1 100644
+--- a/src/graphics/presentation/window/window.cpp
++++ b/src/graphics/presentation/window/window.cpp
+@@ -833,6 +833,9 @@ void WindowContext::Run() {
+ 			continue;
+ 		}
+ 		ProcessEvent(timer.GetTimeS());
++		for (int drained = 0; drained < 1024 && !loop.need_exit && HostInputDrainEvent(&loop.event); ++drained) {
++			ProcessEvent(timer.GetTimeS());
++		}
+ 	}
+ }
+ 
+diff --git a/src/graphics/shader/recompiler/ir/Program.cpp b/src/graphics/shader/recompiler/ir/Program.cpp
+index 74316e84..8d5e6667 100644
+--- a/src/graphics/shader/recompiler/ir/Program.cpp
++++ b/src/graphics/shader/recompiler/ir/Program.cpp
+@@ -154,6 +154,37 @@ Program& Program::operator=(Program&& other) noexcept {
+ 	return *this;
+ }
+ 
++void CompiledShaderInfo::AnalyzeDescriptorLayout() {
++	dense_storage_buffers = true;
++	single_image_views = true;
++	std::vector<uint8_t> seen(info.images.size());
++	for (const auto& binding: bindings.descriptors) {
++		const auto& resources = binding.resources;
++		if (binding.kind == DescriptorBindingKind::Buffers) {
++			if (resources.empty()) {
++				dense_storage_buffers = false;
++			}
++			for (size_t i = 1; i < resources.size(); ++i) {
++				if (resources[i] != uint64_t(resources.front()) + i) {
++					dense_storage_buffers = false;
++					break;
++				}
++			}
++		} else if (ImageBindingResourceClass(binding.kind) != ImageResourceClass::None) {
++			for (const auto resource: resources) {
++				if (resource >= seen.size() || seen[resource]) {
++					single_image_views = false;
++				} else {
++					seen[resource] = 1;
++				}
++			}
++		}
++	}
++	for (const auto present: seen) {
++		if (!present) single_image_views = false;
++	}
++}
++
+ CompiledShaderInfo Program::TakeCompiledInfo() && {
+ 	CompiledShaderInfo result {
+ 	    .stage           = stage,
+@@ -172,6 +203,7 @@ CompiledShaderInfo Program::TakeCompiledInfo() && {
+ 			result.param_export_mask |= 1u << output.index;
+ 		}
+ 	}
++	result.AnalyzeDescriptorLayout();
+ 	return result;
+ }
+ 
+diff --git a/src/graphics/shader/recompiler/ir/ProgramCodec.cpp b/src/graphics/shader/recompiler/ir/ProgramCodec.cpp
+index 297388eb..7fc1910f 100644
+--- a/src/graphics/shader/recompiler/ir/ProgramCodec.cpp
++++ b/src/graphics/shader/recompiler/ir/ProgramCodec.cpp
+@@ -1187,7 +1187,9 @@ bool DecodeCompiledShaderInfo(std::span<const uint8_t> bytes, CompiledShaderInfo
+ 	Read(r, value.info);
+ 	Read(r, value.bindings);
+ 	Read(r, value.write_ranges);
+-	return r.AtEnd();
++	if (!r.AtEnd()) return false;
++	value.AnalyzeDescriptorLayout();
++	return true;
+ }
+ 
+ } // namespace Libs::Graphics::ShaderRecompiler::IR
+diff --git a/src/graphics/shader/recompiler/ir/ShaderIR.h b/src/graphics/shader/recompiler/ir/ShaderIR.h
+index c6b1dbc3..d068430a 100644
+--- a/src/graphics/shader/recompiler/ir/ShaderIR.h
++++ b/src/graphics/shader/recompiler/ir/ShaderIR.h
+@@ -746,6 +746,10 @@ struct CompiledShaderInfo {
+ 	uint32_t                      scratch_dwords      = 0;
+ 	uint32_t                      param_export_mask   = 0;
+ 	bool                          has_address_writes  = false;
++	// Derived from the layout after compilation or cache load; absent from the wire format.
++	bool                          dense_storage_buffers = false;
++	bool                          single_image_views    = false;
++	void AnalyzeDescriptorLayout();
+ 	ShaderInfo                    info;
+ 	BindingLayout                 bindings;
+ 	WriteRangeProgram             write_ranges;
 diff --git a/src/hybrid/kytyGpuBridge.cpp b/src/hybrid/kytyGpuBridge.cpp
 index b8628fcd..68964130 100644
 --- a/src/hybrid/kytyGpuBridge.cpp
@@ -4019,6 +5679,498 @@ index b8628fcd..68964130 100644
  		options.screen_width  = EnvironmentSize("KYTY_GPU_WIDTH", options.screen_width);
  		options.screen_height = EnvironmentSize("KYTY_GPU_HEIGHT", options.screen_height);
  		options.present_mode  = PresentModeFromEnvironment();
+diff --git a/src/libs/avPlayer.cpp b/src/libs/avPlayer.cpp
+index 9302f3e3..25171eb7 100644
+--- a/src/libs/avPlayer.cpp
++++ b/src/libs/avPlayer.cpp
+@@ -1014,6 +1014,7 @@ public:
+ 		if (!frame) {
+ 			return false;
+ 		}
++		const bool first_audio_frame = !current_audio;
+ 		if (current_audio) {
+ 			audio_buffers.Push(std::move(current_audio->buffer));
+ 		}
+@@ -1026,9 +1027,14 @@ public:
+ 		out->details.audio.size          = current_audio->info.details.audio.size;
+ 		std::memcpy(out->details.audio.language_code,
+ 		            current_audio->info.details.audio.language_code, 4);
+-		start_time_ms = current_audio->info.time_stamp + current_audio->timestamp_offset;
+-		clock_start   = std::chrono::steady_clock::now();
+-		paused_extra  = {};
++		// The first decoded audio frame anchors a newly started/seeked stream. Do not
++		// reset the shared A/V clock for every audio callback: doing so makes video
++		// timing follow audio-buffer delivery jitter and desynchronizes cinematics.
++		if (first_audio_frame) {
++			start_time_ms = current_audio->info.time_stamp + current_audio->timestamp_offset;
++			clock_start   = std::chrono::steady_clock::now();
++			paused_extra  = {};
++		}
+ 		RecordLoopBoundary(*current_audio);
+ 		return true;
+ 	}
+diff --git a/src/libs/controller.cpp b/src/libs/controller.cpp
+index ad393f7e..e99e2902 100644
+--- a/src/libs/controller.cpp
++++ b/src/libs/controller.cpp
+@@ -130,6 +130,7 @@ public:
+ 	void SetMotionSensorState(bool enable);
+ 	void ResetOrientation();
+ 	void ToggleGyroEmulation(int id);
++	void SetGyroEmulation(int id, bool enabled);
+ 	void ResetInputState();
+ 	void GetConnectionInfo(bool* flag, int* count);
+ 	void SetVibration(uint8_t large_motor, uint8_t small_motor);
+@@ -154,13 +155,24 @@ private:
+ 	void AddState();
+ 	// Emulated tilt: the right stick drives pitch and roll instead of the stick axes.
+ 	void UpdateEmulatedTilt();
+-	// Apply cached output without changing its game-requested lifetime; caller holds m_mutex.
+-	void ApplyVibration();
+-	bool SendTriggerEffect(const PadTriggerEffectParam& param);
++	[[nodiscard]] bool GyroEmulationApplies(int id) const;
++	void               ApplyGyroEmulation(bool enabled);
++	struct VibrationRequest {
++		int      active_id   = -1;
++		uint8_t  large_motor = 0;
++		uint8_t  small_motor = 0;
++		uint32_t duration    = 0;
++	};
++	// Snapshot vibration parameters while holding m_mutex; send HID outside m_mutex.
++	VibrationRequest PrepareVibration();
++	void             SendVibration(const VibrationRequest& req) const;
++	static bool      BuildTriggerEffect(const PadTriggerEffectParam& param, float scale,
++	                                    DualSenseEffects& effect);
++	static void      DispatchTriggerEffect(int active_id, const DualSenseEffects& effect);
+ 
+ 	Common::Mutex    m_mutex;
+ 	PortState        m_port_state      = PortState::Uninitialized;
+-	int              m_active_id       = -1;
++	std::atomic<int> m_active_id       {-1};
+ 	bool             m_connected       = false;
+ 	int              m_connected_count = 0;
+ 	bool             m_motion_enabled  = true;
+@@ -286,14 +298,29 @@ float GetSettingScale(Setting setting) {
+ }
+ 
+ void GameController::CycleSetting(Setting setting) {
+-	Common::LockGuard lock(m_mutex);
+-	auto&             step = m_setting_steps[static_cast<size_t>(setting)];
+-	const auto count = setting == Setting::SpeakerVolume ? SPEAKER_VOLUME.size() : INTENSITY.size();
+-	step.store((step.load(std::memory_order_relaxed) + 1) % count, std::memory_order_relaxed);
+-	if (setting == Setting::VibrationIntensity) {
+-		ApplyVibration();
+-	} else if (setting == Setting::TriggerEffectIntensity) {
+-		(void)SendTriggerEffect(m_trigger_effect);
++	VibrationRequest vib {};
++	DualSenseEffects effect {};
++	int              active_id = -1;
++	bool             send_vib  = false;
++	bool             send_trig = false;
++	{
++		Common::LockGuard lock(m_mutex);
++		auto&             step  = m_setting_steps[static_cast<size_t>(setting)];
++		const auto        count = setting == Setting::SpeakerVolume ? SPEAKER_VOLUME.size() : INTENSITY.size();
++		step.store((step.load(std::memory_order_relaxed) + 1) % count, std::memory_order_relaxed);
++		if (setting == Setting::VibrationIntensity) {
++			vib      = PrepareVibration();
++			send_vib = true;
++		} else if (setting == Setting::TriggerEffectIntensity) {
++			active_id = m_active_id;
++			send_trig = BuildTriggerEffect(m_trigger_effect,
++			                               GetSettingScale(Setting::TriggerEffectIntensity), effect);
++		}
++	}
++	if (send_vib) {
++		SendVibration(vib);
++	} else if (send_trig) {
++		DispatchTriggerEffect(active_id, effect);
+ 	}
+ }
+ 
+@@ -516,6 +543,17 @@ static bool HostInputOnly() {
+ 	return enabled;
+ }
+ 
++static bool SupportsRgbLed(SDL_Gamepad* pad) {
++	return pad != nullptr &&
++	       SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
++}
++
++static bool IsSwitchGamepad(int id) {
++	const auto type = SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(id));
++	return type >= SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
++	       type <= SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
++}
++
+ void GameController::SetDevices(int active_id) {
+ 	Common::LockGuard lock(m_mutex);
+ 	if (m_active_id == active_id) {
+@@ -524,13 +562,16 @@ void GameController::SetDevices(int active_id) {
+ 	if (active_id != HOST_INPUT_CONTROLLER_ID && active_id != -1) {
+ 		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
+ 		    pad != nullptr) {
+-			if (const auto& color = Config::GetControllerColor()) {
++			if (const auto& color = Config::GetControllerColor(); color && SupportsRgbLed(pad)) {
+ 				(void)SDL_SetGamepadLED(pad, (*color)[0], (*color)[1], (*color)[2]);
+ 			}
+-			for (auto sensor: {SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO}) {
+-				if (SDL_GamepadHasSensor(pad, sensor) &&
+-				    !SDL_SetGamepadSensorEnabled(pad, sensor, true)) {
+-					LOGF("\t enabling controller sensor failed: %s\n", SDL_GetError());
++			const char* motion_env = std::getenv("ASTROHYBRID_PAD_MOTION");
++			if (motion_env == nullptr || std::strcmp(motion_env, "0") != 0) {
++				for (auto sensor: {SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO}) {
++					if (SDL_GamepadHasSensor(pad, sensor) &&
++					    !SDL_SetGamepadSensorEnabled(pad, sensor, true)) {
++						LOGF("\t enabling controller sensor failed: %s\n", SDL_GetError());
++					}
+ 				}
+ 			}
+ 		}
+@@ -781,6 +822,15 @@ void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t t
+ 		m_gyro_time = time_us;
+ 	}
+ 	m_state.time = LibKernel::KernelGetProcessTime();
++	// Pure sensor updates do not change buttons/touch: coalesce into the latest unread ring entry
++	// so high-rate 200Hz Switch/PS5 gyro bursts never overflow the 64-entry state buffer.
++	if (m_states_num != 0) {
++		const auto newest = (m_first_state + m_states_num - 1) % STATES_MAX;
++		if (!m_obtained[newest]) {
++			m_states[newest] = m_state;
++			return;
++		}
++	}
+ 	AddState();
+ }
+ 
+@@ -842,18 +892,35 @@ void GameController::UpdateEmulatedTilt() {
+ 
+ void GameController::ToggleGyroEmulation(int id) {
+ 	Common::LockGuard lock(m_mutex);
++	if (GyroEmulationApplies(id)) {
++		ApplyGyroEmulation(!m_gyro_emulation);
++	}
++}
++
++void GameController::SetGyroEmulation(int id, bool enabled) {
++	Common::LockGuard lock(m_mutex);
++	if (GyroEmulationApplies(id) && m_gyro_emulation != enabled) {
++		ApplyGyroEmulation(enabled);
++	}
++}
++
++bool GameController::GyroEmulationApplies(int id) const {
+ 	if (id != HOST_INPUT_CONTROLLER_ID && id != m_active_id) {
+-		return;
++		return false;
+ 	}
+ 	// Pads with a real gyroscope report it directly.
+ 	if (m_active_id != HOST_INPUT_CONTROLLER_ID) {
+ 		auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
+ 		if (pad != nullptr && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {
+-			return;
++			return false;
+ 		}
+ 	}
++	return true;
++}
+ 
+-	m_gyro_emulation = !m_gyro_emulation;
++// Called with m_mutex held.
++void GameController::ApplyGyroEmulation(bool enabled) {
++	m_gyro_emulation = enabled;
+ 	m_emulated_time  = 0;
+ 	m_state.time     = LibKernel::KernelGetProcessTime();
+ 	if (m_gyro_emulation) {
+@@ -906,7 +973,9 @@ static void StopHostPad(SDL_Gamepad* pad) {
+ 		(void)SDL_SendGamepadEffect(pad, &effect, sizeof(effect));
+ 	}
+ 	(void)SDL_RumbleGamepad(pad, 0, 0, 0);
+-	(void)SDL_SetGamepadLED(pad, 0, 0, 0);
++	if (SupportsRgbLed(pad)) {
++		(void)SDL_SetGamepadLED(pad, 0, 0, 0);
++	}
+ }
+ 
+ // ASTROHYBRID_RUMBLE_SCALE=percent (default 100, 0..200): rumble strength for pads other than a
+@@ -933,92 +1002,130 @@ static uint16_t HostRumble(int id, uint8_t motor) {
+ }
+ 
+ void GameController::SetVibration(uint8_t large_motor, uint8_t small_motor) {
+-	Common::LockGuard lock(m_mutex);
+-	m_vibration       = {large_motor, small_motor};
+-	m_vibration_until = SDL_GetTicks() + RUMBLE_DURATION_MS;
+-	ApplyVibration();
++	VibrationRequest req {};
++	{
++		Common::LockGuard lock(m_mutex);
++		m_vibration       = {large_motor, small_motor};
++		m_vibration_until = SDL_GetTicks() + RUMBLE_DURATION_MS;
++		req               = PrepareVibration();
++	}
++	SendVibration(req);
+ }
+ 
+-void GameController::ApplyVibration() {
++GameController::VibrationRequest GameController::PrepareVibration() {
+ 	const auto now = SDL_GetTicks();
+ 	const auto duration =
+ 	    m_vibration_until > now ? static_cast<uint32_t>(m_vibration_until - now) : 0;
+-	const auto scale       = duration != 0 ? GetSettingScale(Setting::VibrationIntensity) : 0.0f;
+-	const auto large_motor = Scale(m_vibration[0], scale);
+-	const auto small_motor = Scale(m_vibration[1], scale);
++	const auto scale = duration != 0 ? GetSettingScale(Setting::VibrationIntensity) : 0.0f;
++	return {m_active_id, Scale(m_vibration[0], scale), Scale(m_vibration[1], scale), duration};
++}
++
++void GameController::SendVibration(const VibrationRequest& req) const {
+ 	// The DualSense haptics backend drives a single pad, so only player 1 uses it.
+ 	if (m_player == 0 &&
+-	    DualSenseHaptics::SetVibration(m_active_id, large_motor, small_motor, duration)) {
++	    DualSenseHaptics::SetVibration(req.active_id, req.large_motor, req.small_motor, req.duration)) {
+ 		return;
+ 	}
+ 
+-	if (m_active_id == HOST_INPUT_CONTROLLER_ID) {
++	if (req.active_id == HOST_INPUT_CONTROLLER_ID || req.active_id == -1) {
+ 		return;
+ 	}
+ 
+-	auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
+-	if (pad == nullptr) {
+-		return;
++	// Switch Pro BT HID output writes hold rumble_pending (pausing reads) and share dev_lock with
++	// input polling: rate-limit non-zero Switch rumble updates while keeping stop (0,0) immediate.
++	const bool is_switch = IsSwitchGamepad(req.active_id);
++	if (is_switch && (req.large_motor != 0 || req.small_motor != 0)) {
++		static std::atomic<uint64_t> last_switch_rumble_ms {0};
++		const uint64_t               now  = SDL_GetTicks();
++		uint64_t                     prev = last_switch_rumble_ms.load(std::memory_order_relaxed);
++		if ((prev != 0 && now - prev < 45) || !last_switch_rumble_ms.compare_exchange_strong(prev, now)) {
++			return;
++		}
+ 	}
+ 
+-	const auto large = HostRumble(m_active_id, large_motor);
+-	const auto small = HostRumble(m_active_id, small_motor);
+-	if (!SDL_RumbleGamepad(pad, large, small, duration)) {
+-		LOGF("\t rumble failed: %s\n", SDL_GetError());
++	SDL_LockJoysticks();
++	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(req.active_id)); pad != nullptr) {
++		const auto large = HostRumble(req.active_id, req.large_motor);
++		const auto small = HostRumble(req.active_id, req.small_motor);
++		if (!SDL_RumbleGamepad(pad, large, small, req.duration)) {
++			LOGF("\t rumble failed: %s\n", SDL_GetError());
++		}
+ 	}
++	SDL_UnlockJoysticks();
+ }
+ 
+ int GameController::GetActiveControllerId() {
+-	Common::LockGuard lock(m_mutex);
+-	return m_active_id;
++	return m_active_id.load(std::memory_order_acquire);
+ }
+ 
+ void GameController::SetLightBar(uint8_t r, uint8_t g, uint8_t b) {
+-	Common::LockGuard lock(m_mutex);
+-	if (const auto& color = Config::GetControllerColor()) {
+-		r = (*color)[0];
+-		g = (*color)[1];
+-		b = (*color)[2];
++	int active_id = -1;
++	{
++		Common::LockGuard lock(m_mutex);
++		if (const auto& color = Config::GetControllerColor()) {
++			r = (*color)[0];
++			g = (*color)[1];
++			b = (*color)[2];
++		}
++		active_id = m_active_id;
++	}
++	if (active_id == HOST_INPUT_CONTROLLER_ID || active_id == -1) {
++		return;
++	}
++	// Skip non-RGB LED controllers (e.g. Switch Pro Home LED, whose SetHomeLight subcommand blocks
++	// up to 500ms waiting for an ACK inside SDL_LockJoysticks() on third-party BT pads).
++	if (IsSwitchGamepad(active_id)) {
++		return;
+ 	}
+-	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
+-	    pad != nullptr) {
++	SDL_LockJoysticks();
++	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
++	    SupportsRgbLed(pad)) {
+ 		(void)SDL_SetGamepadLED(pad, r, g, b);
+ 	}
++	SDL_UnlockJoysticks();
+ }
+ 
+ bool GameController::SetTriggerEffect(const PadTriggerEffectParam& param) {
+-	Common::LockGuard lock(m_mutex);
+-	// The state the game reads back follows every effect it sets, also one the DualSense output
+-	// cannot reproduce (values outside the ranges trigger_effect_to_dualsense converts).
+-	if ((param.trigger_mask & ~0x03u) == 0) {
+-		for (int i = 0; i < 2; i++) {
+-			if ((param.trigger_mask & (1u << i)) != 0) {
+-				m_state_effect.trigger_mask |= static_cast<uint8_t>(1u << i);
+-				m_state_effect.command[i] = param.command[i];
+-			}
+-		}
+-	}
+-	if (!SendTriggerEffect(param)) {
+-		static std::atomic<int> logged {0};
+-		if (logged.fetch_add(1) < 16) {
++	int              active_id = -1;
++	DualSenseEffects effect {};
++	{
++		Common::LockGuard lock(m_mutex);
++		// The state the game reads back follows every effect it sets, also one the DualSense output
++		// cannot reproduce (values outside the ranges trigger_effect_to_dualsense converts).
++		if ((param.trigger_mask & ~0x03u) == 0) {
+ 			for (int i = 0; i < 2; i++) {
+ 				if ((param.trigger_mask & (1u << i)) != 0) {
+-					const auto& c = param.command[i];
+-					std::fprintf(stderr,
+-					             "Pad: trigger effect not sent to the controller: mask=0x%x trigger=%d mode=%u "
+-					             "data=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+-					             param.trigger_mask, i, c.mode, c.data[0], c.data[1], c.data[2], c.data[3],
+-					             c.data[4], c.data[5], c.data[6], c.data[7], c.data[8], c.data[9], c.data[10]);
++					m_state_effect.trigger_mask |= static_cast<uint8_t>(1u << i);
++					m_state_effect.command[i] = param.command[i];
+ 				}
+ 			}
+ 		}
+-		return false;
+-	}
+-	for (int i = 0; i < 2; i++) {
+-		if ((param.trigger_mask & (1u << i)) != 0) {
+-			m_trigger_effect.trigger_mask |= static_cast<uint8_t>(1u << i);
+-			m_trigger_effect.command[i] = param.command[i];
++		if (!BuildTriggerEffect(param, GetSettingScale(Setting::TriggerEffectIntensity), effect)) {
++			static std::atomic<int> logged {0};
++			if (logged.fetch_add(1) < 16) {
++				for (int i = 0; i < 2; i++) {
++					if ((param.trigger_mask & (1u << i)) != 0) {
++						const auto& c = param.command[i];
++						std::fprintf(stderr,
++						             "Pad: trigger effect not sent to the controller: mask=0x%x trigger=%d mode=%u "
++						             "data=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
++						             param.trigger_mask, i, c.mode, c.data[0], c.data[1], c.data[2], c.data[3],
++						             c.data[4], c.data[5], c.data[6], c.data[7], c.data[8], c.data[9], c.data[10]);
++					}
++				}
++			}
++			return false;
++		}
++		for (int i = 0; i < 2; i++) {
++			if ((param.trigger_mask & (1u << i)) != 0) {
++				m_trigger_effect.trigger_mask |= static_cast<uint8_t>(1u << i);
++				m_trigger_effect.command[i] = param.command[i];
++			}
+ 		}
++		active_id = m_active_id;
++	}
++	if (effect.enable_bits != 0) {
++		DispatchTriggerEffect(active_id, effect);
+ 	}
+ 	return true;
+ }
+@@ -1044,13 +1151,13 @@ void GameController::GetTriggerEffectState(int32_t* state) {
+ 	}
+ }
+ 
+-bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
++bool GameController::BuildTriggerEffect(const PadTriggerEffectParam& param, float scale,
++                                        DualSenseEffects& effect) {
+ 	if ((param.trigger_mask & ~0x03u) != 0) {
+ 		return false;
+ 	}
+ 
+-	DualSenseEffects effect {};
+-	const auto       scale = GetSettingScale(Setting::TriggerEffectIntensity);
++	effect = {};
+ 	if ((param.trigger_mask & 0x01u) != 0) {
+ 		effect.enable_bits |= 0x08;
+ 		if (!trigger_effect_to_dualsense(param.command[0], effect.left_trigger, scale)) {
+@@ -1063,15 +1170,19 @@ bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
+ 			return false;
+ 		}
+ 	}
+-	if (effect.enable_bits == 0) {
+-		return true;
+-	}
++	return true;
++}
+ 
+-	auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
+-	if (pad != nullptr && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5) {
++void GameController::DispatchTriggerEffect(int active_id, const DualSenseEffects& effect) {
++	if (effect.enable_bits == 0 || active_id == HOST_INPUT_CONTROLLER_ID || active_id == -1) {
++		return;
++	}
++	SDL_LockJoysticks();
++	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
++	    pad != nullptr && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5) {
+ 		(void)SDL_SendGamepadEffect(pad, &effect, sizeof(effect));
+ 	}
+-	return true;
++	SDL_UnlockJoysticks();
+ }
+ 
+ void GameController::GetConnectionInfo(bool* flag, int* count) {
+@@ -1386,6 +1497,13 @@ void ToggleGyroEmulation(int id) {
+ 	}
+ }
+ 
++void SetGyroEmulation(int id, bool enabled) {
++	Common::LockGuard lock(g_router_mutex);
++	if (auto* player = PlayerForDevice(id)) {
++		player->SetGyroEmulation(id, enabled);
++	}
++}
++
+ void ResetInputState() {
+ 	for (const auto& player: g_players) {
+ 		if (player != nullptr) {
+@@ -1681,7 +1799,6 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
+ 
+ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
+ 	PRINT_NAME();
+-	Common::LockGuard lock(g_router_mutex);
+ 
+ 	if (const auto error = PadCheckHandle(handle); error != OK) {
+ 		return error;
+@@ -1711,7 +1828,6 @@ int KYTY_SYSV_ABI PadResetLightBar(int handle) {
+ 
+ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
+ 	PRINT_NAME();
+-	Common::LockGuard lock(g_router_mutex);
+ 
+ 	if (const auto error = PadCheckHandle(handle); error != OK) {
+ 		return error;
+@@ -1727,7 +1843,6 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
+ 
+ int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const PadTriggerEffectParam* param) {
+ 	PRINT_NAME();
+-	Common::LockGuard lock(g_router_mutex);
+ 
+ 	if (const auto error = PadCheckHandle(handle); error != OK) {
+ 		return error;
+diff --git a/src/libs/controller.h b/src/libs/controller.h
+index 1dd3379a..46f69704 100644
+--- a/src/libs/controller.h
++++ b/src/libs/controller.h
+@@ -84,6 +84,8 @@ void SetRightStick(int id, int x, int y);
+ void SetTouchPad(int id, int finger, bool down, float x, float y);
+ void SetSensor(int id, Sensor sensor, const float* data, uint64_t time_us);
+ void ToggleGyroEmulation(int id);
++// Turns the right-stick tilt on or off (no effect for pads with a real gyroscope).
++void SetGyroEmulation(int id, bool enabled);
+ void ResetInputState();
+ int  GetActiveControllerId();
+ // True when the player has a keyboard or gamepad assigned.
 diff --git a/tests/FrameStepTests.cpp b/tests/FrameStepTests.cpp
 new file mode 100644
 index 00000000..6572f2d3
@@ -4084,6 +6236,52 @@ index 00000000..6572f2d3
 +	      "invalid nominal interval escaped validation");
 +	std::puts("FrameStepTests: elapsed-time integration, bounds, discontinuities and mode transitions passed");
 +}
+diff --git a/src/graphics/host_gpu/renderer/vulkanCallTiming.h b/src/graphics/host_gpu/renderer/vulkanCallTiming.h
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/host_gpu/renderer/vulkanCallTiming.h
+@@ -0,0 +1,41 @@
++#pragma once
++
++#include "common/liveSwitch.h"
++
++#include <array>
++#include <chrono>
++#include <cstdint>
++
++namespace Libs::Graphics::VulkanCallTiming {
++
++enum class Op : unsigned { Vertex, Index, PushDescriptors, UpdateSet, BindSet, PushConstants,
++                           Pipeline, Draw, IndexedDraw, MeshDraw, Count };
++struct Counts {
++	uint64_t calls = 0, skipped = 0, samples = 0, ns = 0;
++};
++using Clock = std::chrono::steady_clock;
++extern Live::Switch enabled;
++extern thread_local std::array<Counts, static_cast<unsigned>(Op::Count)> counts;
++extern thread_local uint64_t omitted_writes;
++void ReportIfDue(Clock::time_point now);
++
++// Time the native call only, on a sample of calls per operation and recording thread.
++template <class F> inline void Record(Op op, F call) {
++	if (enabled.On()) [[unlikely]] {
++		auto& value = counts[static_cast<unsigned>(op)];
++		if ((++value.calls & 63) == 1) {
++			const auto start = Clock::now();
++			call();
++			const auto end = Clock::now();
++			value.ns += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
++			++value.samples;
++			ReportIfDue(end);
++			return;
++		}
++	}
++	call();
++}
++inline void Skipped(Op op) {
++	if (enabled.On()) [[unlikely]] ++counts[static_cast<unsigned>(op)].skipped;
++}
++} // namespace Libs::Graphics::VulkanCallTiming
 diff --git a/src/graphics/presentation/physicsFaultCapture.h b/src/graphics/presentation/physicsFaultCapture.h
 new file mode 100644
 --- /dev/null
@@ -4148,3 +6346,88 @@ new file mode 100644
 +#else
 +namespace Libs::Vr { inline void RegisterPhysicsFaultCapture() {} }
 +#endif
+diff --git a/src/graphics/presentation/stagingSelection.h b/src/graphics/presentation/stagingSelection.h
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/presentation/stagingSelection.h
+@@ -0,0 +1,39 @@
++#pragma once
++
++#include <cstdint>
++#include <cstddef>
++
++namespace Libs::Vr {
++
++// Caller holds the staging lock. A pending headset copy must retire before changing the held slot.
++template<class Slot, std::size_t N>
++int SelectSource(const Slot (&slots)[N], int held, uint64_t shown) {
++	int ready = -1;
++	int pending = -1;
++	for (std::size_t i = 0; i < N; ++i) {
++		const auto& slot = slots[i];
++		if (slot.sequence <= shown) continue;
++		if (slot.producer->IsFree(slot.tick)) {
++			if (ready < 0 || slot.sequence > slots[ready].sequence) ready = static_cast<int>(i);
++		} else if (pending < 0 || slot.sequence < slots[pending].sequence) {
++			pending = static_cast<int>(i);
++		}
++	}
++	if (ready >= 0) return ready;
++	if (held >= 0 && slots[held].sequence > shown) return held;
++	return pending;
++}
++
++template<class Slot, std::size_t N>
++int SelectWriteSlot(const Slot (&slots)[N], int latest, int held) {
++	static_assert(N >= 3);
++	int oldest = -1;
++	for (std::size_t i = 0; i < N; ++i) {
++		const auto index = static_cast<int>(i);
++		if (index == latest || index == held) continue;
++		if (oldest < 0 || slots[i].sequence < slots[oldest].sequence) oldest = index;
++	}
++	return oldest;
++}
++
++} // namespace Libs::Vr
+diff --git a/tests/StereoStagingTests.cpp b/tests/StereoStagingTests.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/StereoStagingTests.cpp
+@@ -0,0 +1,36 @@
++#include "graphics/presentation/stagingSelection.h"
++
++#include <cstdio>
++
++struct Timeline {
++	uint64_t completed;
++	bool IsFree(uint64_t tick) const { return tick <= completed; }
++};
++
++struct Slot {
++	uint64_t sequence = 0;
++	uint64_t tick = 0;
++	Timeline* producer = nullptr;
++};
++
++int main() {
++	using Libs::Vr::SelectSource;
++	using Libs::Vr::SelectWriteSlot;
++	Slot slots[3] {};
++	if (SelectSource(slots, -1, 0) != -1) return 1;
++	Timeline first {10}, second {1};
++	slots[0] = {1, 10, &first};
++	slots[1] = {2, 11, &first};
++	slots[2] = {3, 11, &first};
++	// A newer unfinished pair must not hide an intermediate completed pair.
++	if (SelectSource(slots, 2, 0) != 0 || SelectSource(slots, 1, 1) != 1) return 2;
++	if (SelectWriteSlot(slots, 2, 0) != 1 || SelectWriteSlot(slots, 0, -1) != 1) return 3;
++	first.completed = 11;
++	// Publication order also distinguishes two frames recorded at the same timeline tick.
++	if (SelectSource(slots, 1, 1) != 2 || SelectSource(slots, -1, 3) != -1) return 4;
++	slots[0] = {4, 2, &second};
++	if (SelectSource(slots, -1, 2) != 2) return 5;
++	second.completed = 2;
++	if (SelectSource(slots, -1, 2) != 0) return 6;
++	std::puts("Stereo staging selection passed");
++}
