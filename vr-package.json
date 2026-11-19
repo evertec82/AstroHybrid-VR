@@ -1,5 +1,5 @@
 {
-  "version": "0.1.1",
+  "version": "0.1.2",
   "base_runtime": "AstroHybrid 1.2.1",
   "game": {
     "title_id": "PPSA21567",
@@ -96,11 +96,11 @@
   "payload": [
     {
       "path": "AstroHybrid VR Launcher.ps1",
-      "sha256": "ad10bb5959aad39bd6d306d6c8a40e487bebd60d4afabf7d32e7ea4d27a9550e"
+      "sha256": "267bb78e43c20d074581937dbff8eba7bd0529f15131b3649b60b1f38ef871f1"
     },
     {
       "path": "BUILDING.md",
-      "sha256": "0b076eeedcf5181a9fa28a770954ba34ec3baf4557c1fb3c9c727d602413f27c"
+      "sha256": "ce90a0ffb47f2d293533405203a2e1a38e7dd3760911f8ca349d41e07d69b0e0"
     },
     {
       "path": "Build/FrameGeneration/BUILD_PROVENANCE.json",
@@ -807,8 +807,12 @@
       "sha256": "049091afcd93790a8fbc85a55e944b3b503d8dadfee7f9276674c8cc0c7f9f23"
     },
     {
+      "path": "Build/HeadsetProjectionPreview/kyty_gpu.diagnostics.dll",
+      "sha256": "96b415bbfb544c4d726cb8242984f774d5f72c2dccce44cc67137b2de8b30ad1"
+    },
+    {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.dll",
-      "sha256": "3432a0a711f4fa4ad64b18571d7572edb8e5fbb21ecedc33e935b72b86719d6e"
+      "sha256": "d491fe76dc4f614367208caddb33307588374273c5fb58c78e9fc411e79bf793"
     },
     {
       "path": "Build/RunHybrid/assets/cursors/drawing.png",
@@ -972,7 +976,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "cb9d426ee9f659c5f3a207ec913ea07f4be82e49989ed12037e146f2ed699599"
+      "sha256": "2575d4cd0c30511874010c09a7fecacad772603ee2fb4fb230c7f2e774ade869"
     },
     {
       "path": "VR-support/libSceVideoOut.prx",

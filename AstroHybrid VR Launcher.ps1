@@ -57,6 +57,13 @@ function Apply-Settings($settings) {
     $running = [Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -like 'AstroBot*' } | Where-Object { try { $_.MainModule.FileName.StartsWith("$run\",[StringComparison]::OrdinalIgnoreCase) } catch { $true } }
     if ($running) { throw 'Close Astro Bot before starting another session or applying these settings.' }
     $staged = Join-Path $root 'Build\HeadsetProjectionPreview\kyty_gpu.dll'
+    $detailedDraws = $settings.VerboseLogging -or
+                     ($env:KYTY_CP_COMMIT_STATS -and $env:KYTY_CP_COMMIT_STATS -ne '0') -or
+                     ($env:KYTY_BUFFER_LOOKUP_STATS -and $env:KYTY_BUFFER_LOOKUP_STATS -ne '0')
+    if ($detailedDraws) {
+        $diagnosticRenderer = Join-Path (Split-Path $staged) 'kyty_gpu.diagnostics.dll'
+        if (Test-Path -LiteralPath $diagnosticRenderer -PathType Leaf) { $staged = $diagnosticRenderer }
+    }
     $installed = Join-Path $run 'kyty_gpu.dll'
     $hash = File-Hash $staged
     if ((File-Hash $installed) -ne $hash) { [IO.File]::Copy($staged,$installed,$true) }
