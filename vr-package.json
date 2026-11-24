@@ -1,5 +1,5 @@
 {
-  "version": "0.1.3",
+  "version": "0.1.4",
   "base_runtime": "AstroHybrid 1.2.1",
   "game": {
     "title_id": "PPSA21567",
@@ -105,7 +105,7 @@
   "payload": [
     {
       "path": "AstroHybrid VR Launcher.ps1",
-      "sha256": "a1f88af162db0edd30b4cbecb40fdf21644effba617160eef71c7ec6cdd24a60"
+      "sha256": "f6a831d11283f447a30cb1c6dbfec07daf2c24672df166bf53bd6013e60ac2d6"
     },
     {
       "path": "BUILDING.md",
@@ -816,16 +816,20 @@
       "sha256": "049091afcd93790a8fbc85a55e944b3b503d8dadfee7f9276674c8cc0c7f9f23"
     },
     {
+      "path": "Build/HeadsetProjectionPreview/kyty_gpu.construction.dlss.dll",
+      "sha256": "f25097e595c188fe48f2f45d7d3f212c21f9b1ad797cf59e76eaa23684cb3332"
+    },
+    {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.diagnostics.dll",
-      "sha256": "0b364fddc94b5349d2fb5943733d7c3afa6c7b55d886b6989a8c0a745b0c237e"
+      "sha256": "47beecb25b6903a3a0ddc6d92f263dfa0ad52971aa6c3c438649b1d19f742e8f"
     },
     {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.dll",
-      "sha256": "d0f641ce5d280aa1959ef524cfe2111718e2da660fb863a76a4f2686edcb9ea3"
+      "sha256": "b5b62fa6d4c9582074cb926db9c40e462477ce5424ebe3fb856eb369a024e6b8"
     },
     {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.dlss.dll",
-      "sha256": "10a0bd004a86e11e396d1d42456daa51d28be4c699c8b961fdc6d775a20f1e1d"
+      "sha256": "b5b62fa6d4c9582074cb926db9c40e462477ce5424ebe3fb856eb369a024e6b8"
     },
     {
       "path": "Build/RunHybrid/assets/cursors/drawing.png",
@@ -993,11 +997,11 @@
     },
     {
       "path": "Play AstroHybrid VR.bat",
-      "sha256": "4e8e043ea03c8ae0e6dbbe416896e25fe82e305fe42a53112ad91d919d7435c6"
+      "sha256": "b50e60009170d6a4afc11bfb1c971c9a0b24cfa626a57310eb481885591d0841"
     },
     {
       "path": "README.md",
-      "sha256": "93199425f50f7e1abcba049b6eb96922897b3d513154ced58b0bdb6a5df876d6"
+      "sha256": "a0de3ff8754d58d15800ea086cd9a8d5d0bc5ef06c532a61b0477608009759a9"
     },
     {
       "path": "VR-support/libSceVideoOut.prx",

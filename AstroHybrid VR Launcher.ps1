@@ -7,6 +7,11 @@ $dlssModes = @('Performance','Balanced','Quality','DLAA')
 
 function Read-Settings {
     $settings = [ordered]@{ ResolutionWidth=3520; DlssSuperResolution=$false; DlssMode='Quality'; FrameGeneration=$true; Multiplier=2; FlowQuality='Medium'; FlowResolution=25; Overlay=$false; VerboseLogging=$false; SkipIntro=$false }
+    $settings.GpuAdapter='Automatic'
+    $settings.TriggerStrength=100
+    $settings.TiltStrength=100
+    $settings.TiltToggle=$false
+    $settings.DualSenseSpeaker=$true
     if (Test-Path -LiteralPath $SettingsFile) {
         $saved = Get-Content -LiteralPath $SettingsFile -Raw | ConvertFrom-Json
         foreach ($key in @($settings.Keys)) {
@@ -19,16 +24,24 @@ function Read-Settings {
     if ($settings.Multiplier -notin @(2,3,4)) { throw 'Unsupported frame-generation multiplier.' }
     if ($settings.FlowQuality -notin @('Fast','Medium','Quality')) { throw 'Unsupported flow quality.' }
     if ($settings.FlowResolution -notin @(25,50,75,100)) { throw 'Unsupported flow resolution.' }
-    foreach ($key in @('DlssSuperResolution','FrameGeneration','Overlay','VerboseLogging','SkipIntro')) {
+    if ($settings.TriggerStrength -lt 0 -or $settings.TriggerStrength -gt 100 -or
+        $settings.TiltStrength -lt 25 -or $settings.TiltStrength -gt 200) { throw 'Invalid controller strength.' }
+    foreach ($key in @('DlssSuperResolution','FrameGeneration','Overlay','VerboseLogging','SkipIntro','TiltToggle','DualSenseSpeaker')) {
         if ($settings[$key] -isnot [bool]) { throw "Invalid boolean setting: $key" }
-    }
-    if ($settings.ResolutionWidth -eq 6000 -and (!$settings.DlssSuperResolution -or $settings.DlssMode -eq 'DLAA')) {
-        $settings.DlssSuperResolution=$true
-        $settings.DlssMode='Performance'
     }
     return $settings
 }
+function Get-ResolutionIssue($width,$sr,$mode) {
+    if ($width -eq 6000 -and (!$sr -or $mode -eq 'DLAA')) {
+        return "$width pixels per eye exceeds Construction's native graphics pool. Choose DLSS reconstruction or a native width up to 5184."
+    }
+}
+function Assert-Resolution($settings) {
+    $issue=Get-ResolutionIssue $settings.ResolutionWidth $settings.DlssSuperResolution $settings.DlssMode
+    if ($issue) { throw $issue }
+}
 function Save-Settings($settings) {
+    Assert-Resolution $settings
     $temporary = "$SettingsFile.tmp"
     $settings | ConvertTo-Json | Set-Content -LiteralPath $temporary -Encoding UTF8
     Move-Item -LiteralPath $temporary -Destination $SettingsFile -Force
@@ -71,9 +84,16 @@ function File-Hash([string]$path) {
 }
 function Game-Executable($settings) {
     if ($settings.DlssSuperResolution -and $settings.DlssMode -ne 'DLAA') { return 'AstroBot-NonRT-SoftAssert-DLSS-PhysicsGuard.exe' }
+    if ($settings.ResolutionWidth -eq 3200) { return 'AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard-3200.exe' }
     return 'AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard.exe'
 }
+function Use-ConstructionRenderer($settings) {
+    $native5184 = $settings.ResolutionWidth -eq 5184 -and (!$settings.DlssSuperResolution -or $settings.DlssMode -eq 'DLAA')
+    $quality6000 = $settings.ResolutionWidth -eq 6000 -and $settings.DlssSuperResolution -and $settings.DlssMode -eq 'Quality'
+    return $native5184 -or $quality6000
+}
 function Apply-Settings($settings) {
+    Assert-Resolution $settings
     $run = Join-Path $root 'Build\RunHybrid'
     $game = Join-Path $run (Game-Executable $settings)
     if (!(Test-Path -LiteralPath $game)) { throw "Missing game executable: $game" }
@@ -90,6 +110,10 @@ function Apply-Settings($settings) {
     } elseif ($detailedDraws) {
         $diagnosticRenderer = Join-Path (Split-Path $staged) 'kyty_gpu.diagnostics.dll'
         if (Test-Path -LiteralPath $diagnosticRenderer -PathType Leaf) { $staged = $diagnosticRenderer }
+    }
+    if (Use-ConstructionRenderer $settings) {
+        $staged = Join-Path (Split-Path $staged) 'kyty_gpu.construction.dlss.dll'
+        if (!(Test-Path -LiteralPath $staged -PathType Leaf)) { throw 'The high-resolution Construction renderer is missing.' }
     }
     $installed = Join-Path $run 'kyty_gpu.dll'
     $hash = File-Hash $staged
@@ -116,10 +140,8 @@ function Apply-Settings($settings) {
     })
     Save-Settings $settings
 }
-function Use-LargeEyeTargets($width,$sr,$mode,$frameGeneration) {
-    if ($width -eq 6000 -or ($width -eq 3200 -and $sr -and $mode -ne 'DLAA')) { return $true }
-    if ($frameGeneration) { return $false }
-    return $width -eq 3520 -or ($width -eq 4512 -and (!$sr -or $mode -ne 'DLAA')) -or ($width -eq 5184 -and $sr -and $mode -ne 'DLAA')
+function Use-LargeEyeTargets($width,$sr,$mode) {
+    return $width -ge 3520 -or ($width -eq 3200 -and $sr -and $mode -ne 'DLAA')
 }
 function Start-Game($settings) {
     Apply-Settings $settings
@@ -128,11 +150,27 @@ function Start-Game($settings) {
     $start.Arguments='/d /c "Play AstroHybrid VR.bat"'
     $start.WorkingDirectory=$root; $start.UseShellExecute=$false; $start.CreateNoWindow=$true
     $environment=$start.EnvironmentVariables
+    # Keep per-draw GPU markers with the existing detailed-diagnostics option.
+    if (!$environment.ContainsKey('KYTY_DEVICE_FAULT_DIAGNOSTICS')) {
+        $environment['KYTY_DEVICE_FAULT_DIAGNOSTICS'] = if ($settings.VerboseLogging) { 'checkpoints' } else { '0' }
+    }
     # A full allocation census walks both driver and emulator data on the rendering thread.
     if (!$environment.ContainsKey('KYTY_VRAM_STATS')) {
         $environment['KYTY_VRAM_STATS'] = [string][int]$settings.VerboseLogging
     }
     $environment['ASTROHYBRID_EXE']=(Game-Executable $settings)
+    if ($settings.GpuAdapter -ne 'Automatic') {
+        $name=$settings.GpuAdapter
+        $token=[regex]::Match($name,'(?:RTX|GTX)\s*\d{3,4}(?:\s*(?:Ti|SUPER))?|Arc\s*[AB]?\d{3}|(?:UHD|Iris(?:\s*Xe)?|HD)\s*Graphics(?:\s*\d{3})?|RX\s*\d{4}(?:\s*XT)?','IgnoreCase')
+        $environment['ANYPS5_GPU']=if ($token.Success) { $token.Value } else { $name }
+    }
+    $environment['ASTROHYBRID_TRIGGER_STRENGTH']=[string]$settings.TriggerStrength
+    $environment['ASTROHYBRID_TILT_STRENGTH']=[string]$settings.TiltStrength
+    $environment['ASTROHYBRID_TILT_TOGGLE']=[string][int]$settings.TiltToggle
+    if (!$settings.DualSenseSpeaker) {
+        $environment['ASTROHYBRID_DS_SPEAKER']='0'
+        $environment['ASTROHYBRID_DS_WIRELESS_SPEAKER']='0'
+    }
     $environment['ASTROHYBRID_DLSS']=[string][int]$settings.DlssSuperResolution
     if ($settings.DlssSuperResolution) {
         $environment['ASTROHYBRID_CUDA_HOLE']='1'
@@ -141,8 +179,15 @@ function Start-Game($settings) {
     $environment['ASTROHYBRID_VR_HEADSET_PROJECTION']='1'
     $environment['KYTY_VR_EYE_WIDTH']="$($settings.ResolutionWidth)"
     $environment['KYTY_VR_OUTPUT_PIXELS']='6.5'
+    # Tested cache headroom for the 32 GB GPU; these limits do not change render resolution.
+    foreach ($entry in @{
+        KYTY_VRAM_BUDGET_MB='23552'; KYTY_NATIVE_IMAGE_POOL_MB='64'; KYTY_TILER_SCRATCH_POOL_MB='128'; KYTY_BUFFER_LRU_SKIP='1'
+        KYTY_GUEST_BACKING_LAZY_COMMIT='1'; KYTY_GUEST_BACKING_LAZY_ZERO='1'
+    }.GetEnumerator()) {
+        if (!$environment.ContainsKey($entry.Key)) { $environment[$entry.Key]=$entry.Value }
+    }
     $environment['ASTROHYBRID_SKIP_INTRO']="$([int]$settings.SkipIntro)"
-    $large=Use-LargeEyeTargets $settings.ResolutionWidth $settings.DlssSuperResolution $settings.DlssMode $settings.FrameGeneration
+    $large=Use-LargeEyeTargets $settings.ResolutionWidth $settings.DlssSuperResolution $settings.DlssMode
     $environment['ASTROHYBRID_VR_LARGE_TARGETS']=[string][int]$large
     if ($large) {
         $environment['KYTY_GUEST_BACKING_LAZY_COMMIT']='1'
@@ -159,6 +204,11 @@ function Start-Game($settings) {
             $environment['KYTY_STREAM_RING_HOST']='1'
             $environment['KYTY_TILER_SCRATCH_POOL_MB']='16'
             $environment['KYTY_NATIVE_IMAGE_POOL_MB']='32'
+            if (($settings.ResolutionWidth -eq 6000 -or $settings.FrameGeneration) -and (Use-ConstructionRenderer $settings)) {
+                $environment['KYTY_VRAM_BUDGET_MB']='18000'
+                $environment['KYTY_VRAM_IDLE_FRAMES']='16'
+                $environment['KYTY_VRAM_PRESSURE_FRAMES']='4'
+            }
         }
     }
     # Isolate the chosen mode from older globally armed OFXR copies.
@@ -183,7 +233,7 @@ function Start-Game($settings) {
 }
 
 $settings=Read-Settings
-if ($ValidateOnly) { $settings | ConvertTo-Json; exit 0 }
+if ($ValidateOnly) { Assert-Resolution $settings; $settings | ConvertTo-Json; exit 0 }
 if ($ApplyOnly) { Apply-Settings $settings; 'Settings applied; game was not launched.'; exit 0 }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -198,33 +248,26 @@ $header.SetBounds(24,16,500,38); $form.Controls.Add($header)
 $intro=New-Object Windows.Forms.Label
 $intro.Text='Both eyes render in the same game frame. Settings are saved for next time.'
 $intro.SetBounds(25,61,510,45); $form.Controls.Add($intro)
-function Add-Choice([string]$label,[int]$y,[object[]]$items,[object]$selected) {
-    $caption=New-Object Windows.Forms.Label; $caption.Text=$label; $caption.SetBounds(25,$y+4,225,26); $form.Controls.Add($caption)
+function Add-Choice([string]$label,[int]$y,[object[]]$items,[object]$selected,$parent=$form) {
+    $caption=New-Object Windows.Forms.Label; $caption.Text=$label; $caption.SetBounds(25,$y+4,225,26); $parent.Controls.Add($caption)
     $choice=New-Object Windows.Forms.ComboBox; $choice.DropDownStyle='DropDownList'
     $choice.SetBounds(260,$y,270,28); foreach($item in $items){[void]$choice.Items.Add([string]$item)}
-    $choice.SelectedItem=[string]$selected; $form.Controls.Add($choice); return $choice
+    $choice.SelectedItem=[string]$selected; $parent.Controls.Add($choice); return $choice
 }
 $resolution=Add-Choice 'Per-eye output width' 112 @($widths | ForEach-Object {"$_ pixels"}) "$($settings.ResolutionWidth) pixels"
 $hint=New-Object Windows.Forms.Label
 $showResolutionHint={
     $width=[int]($resolution.SelectedItem -replace ' pixels','')
-    $dlss.Enabled=($width -ne 6000)
-    if ($width -eq 6000) {
-        if (!$dlss.Checked -or $dlssMode.SelectedItem -eq 'DLAA') {
-            $dlssMode.SelectedItem='Performance'
-            $dlss.Checked=$true
-        }
-        $hint.Text='DLSS reconstructs to the full headset target. Performance uses the least memory.'
-    } elseif ($width -le 3200 -or (Use-LargeEyeTargets $width $dlss.Checked $dlssMode.SelectedItem $generation.Checked)) {
-        $hint.Text='Scene output follows the per-eye size within the verified pixel budget.'
+    $issue=Get-ResolutionIssue $width $dlss.Checked $dlssMode.SelectedItem
+    if ($issue) {
+        $hint.Text=$issue
+    } elseif ($dlss.Checked -and $dlssMode.SelectedItem -ne 'DLAA') {
+        $hint.Text="DLSS $($dlssMode.SelectedItem) renders a smaller image and reconstructs it to $width pixels per eye."
     } else {
-        $hint.Text=switch ($width) {
-            3520 { 'For full per-eye resolution, turn off frame generation.' }
-            4512 { 'For full resolution, turn off frame generation and use native or DLSS Super Resolution.' }
-            5184 { 'For full resolution, turn off frame generation and select DLSS Quality, Balanced or Performance.' }
-            default { 'Headset output is scaled from the game image at this preset.' }
-        }
+        $hint.Text="The scene renders at $width pixels per eye. Height follows your headset's proportions."
     }
+    if ($play) { $play.Enabled=(!$issue -and !$PreviewOnly) }
+    if ($save) { $save.Enabled=!$issue }
 }
 $resolution.Add_SelectedIndexChanged($showResolutionHint)
 $hint.SetBounds(25,148,510,40); $hint.ForeColor=[Drawing.Color]::DimGray; $form.Controls.Add($hint)
@@ -249,15 +292,37 @@ $dlss.Add_CheckedChanged({ $dlssMode.Enabled=$dlss.Checked })
 $dlss.Add_CheckedChanged($showResolutionHint)
 $dlssMode.Add_SelectedIndexChanged($showResolutionHint)
 $generation.Add_CheckedChanged($showResolutionHint)
-& $showResolutionHint
 function Get-Selections {
-    return [ordered]@{DlssSuperResolution=$dlss.Checked; DlssMode=[string]$dlssMode.SelectedItem; ResolutionWidth=[int]($resolution.SelectedItem -replace ' pixels',''); FrameGeneration=$generation.Checked; Multiplier=[int]($multiplier.SelectedItem -replace 'x',''); FlowQuality=[string]$quality.SelectedItem; FlowResolution=[int]($flow.SelectedItem -replace '%',''); Overlay=$overlay.Checked; VerboseLogging=$logging.Checked; SkipIntro=$skip.Checked}
+    return [ordered]@{DlssSuperResolution=$dlss.Checked; DlssMode=[string]$dlssMode.SelectedItem; ResolutionWidth=[int]($resolution.SelectedItem -replace ' pixels',''); FrameGeneration=$generation.Checked; Multiplier=[int]($multiplier.SelectedItem -replace 'x',''); FlowQuality=[string]$quality.SelectedItem; FlowResolution=[int]($flow.SelectedItem -replace '%',''); Overlay=$overlay.Checked; VerboseLogging=$logging.Checked; SkipIntro=$skip.Checked; GpuAdapter=$settings.GpuAdapter; TriggerStrength=$settings.TriggerStrength; TiltStrength=$settings.TiltStrength; TiltToggle=$settings.TiltToggle; DualSenseSpeaker=$settings.DualSenseSpeaker}
 }
+$devices=New-Object Windows.Forms.Button; $devices.Text='GPU / Controller'; $devices.SetBounds(25,510,154,33); $form.Controls.Add($devices)
+$devices.Add_Click({
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='GPU and controller'; $dialog.ClientSize=New-Object Drawing.Size(560,270)
+    $dialog.StartPosition='CenterParent'; $dialog.FormBorderStyle='FixedDialog'
+    $dialog.MinimizeBox=$false; $dialog.MaximizeBox=$false
+    $dialog.Font=$form.Font
+
+    $adapters=@('Automatic') + @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object Name | Sort-Object -Unique)
+    if ($settings.GpuAdapter -notin $adapters) { $adapters+=$settings.GpuAdapter }
+    $gpu=Add-Choice 'Graphics adapter' 16 $adapters $settings.GpuAdapter $dialog
+    $trigger=Add-Choice 'Adaptive trigger strength (%)' 58 (@(0,25,50,100,$settings.TriggerStrength) | Sort-Object -Unique) $settings.TriggerStrength $dialog
+    $tilt=Add-Choice 'Right-stick tilt strength (%)' 100 (@(25,50,75,100,125,150,175,200,$settings.TiltStrength) | Sort-Object -Unique) $settings.TiltStrength $dialog
+    $toggle=New-Object Windows.Forms.CheckBox; $toggle.Text='Toggle right-stick tilt'; $toggle.Checked=$settings.TiltToggle; $toggle.SetBounds(25,148,225,30); $dialog.Controls.Add($toggle)
+    $speaker=New-Object Windows.Forms.CheckBox; $speaker.Text='DualSense speaker'; $speaker.Checked=$settings.DualSenseSpeaker; $speaker.SetBounds(260,148,250,30); $dialog.Controls.Add($speaker)
+    $ok=New-Object Windows.Forms.Button; $ok.Text='OK'; $ok.DialogResult='OK'; $ok.SetBounds(420,211,110,33); $dialog.Controls.Add($ok); $dialog.AcceptButton=$ok
+    if ($dialog.ShowDialog($devices.FindForm()) -eq 'OK') {
+        $settings.GpuAdapter=[string]$gpu.SelectedItem; $settings.TriggerStrength=[int]$trigger.SelectedItem
+        $settings.TiltStrength=[int]$tilt.SelectedItem; $settings.TiltToggle=$toggle.Checked; $settings.DualSenseSpeaker=$speaker.Checked
+    }
+    $dialog.Dispose()
+})
 $save=New-Object Windows.Forms.Button; $save.Text='Save'; $save.SetBounds(193,510,100,33); $form.Controls.Add($save)
 $save.Add_Click({try {Save-Settings (Get-Selections); $save.Text='Saved'} catch {[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Settings') | Out-Null}})
 $cancel=New-Object Windows.Forms.Button; $cancel.Text='Close'; $cancel.SetBounds(306,510,100,33); $form.Controls.Add($cancel); $cancel.Add_Click({$form.Close()})
 $play=New-Object Windows.Forms.Button; $play.Text='Start VR'; $play.SetBounds(419,510,110,33); $form.Controls.Add($play)
 $play.Add_Click({try {Start-Game (Get-Selections); $form.Close()} catch {[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Unable to start VR') | Out-Null}})
+& $showResolutionHint
 $form.AcceptButton=$play; $form.CancelButton=$cancel
 if ($PreviewOnly) { $play.Enabled=$false; $form.AcceptButton=$null }
 [void]$form.ShowDialog()
