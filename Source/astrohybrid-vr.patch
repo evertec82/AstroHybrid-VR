@@ -115,6 +115,37 @@ index 66af9e79..ba8f40a5 100644
  		count = 0;
  	}
  	ids.resize(count);
+diff --git a/src/common/frameStep.h b/src/common/frameStep.h
+new file mode 100644
+index 00000000..349e4839
+--- /dev/null
++++ b/src/common/frameStep.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++
++namespace Common {
++// A simulation interval, not an OS clock. A debugger pause/loading stall resets the sample
++// rather than making the simulation catch up in one giant physics step.
++class FrameStepClock {
++public:
++	double Advance(uint64_t now_ns, double nominal, bool realtime) {
++		if (!std::isfinite(nominal) || nominal <= 0 || nominal > 0.1) nominal = 1.0 / 60.0;
++		const auto previous = last_ns;
++		last_ns = now_ns;
++		if (!realtime || previous == 0 || now_ns <= previous) return nominal;
++		const double elapsed = double(now_ns - previous) * 1e-9;
++		if (elapsed > 0.25) return nominal;
++		// Preserve short frames too: rounding each one up accumulates positive clock drift.
++		return std::clamp(elapsed, 0.001, 0.1);
++	}
++private:
++	uint64_t last_ns = 0;
++};
++} // namespace Common
 diff --git a/src/graphics/guest_gpu/command_processor/commandProcessor.h b/src/graphics/guest_gpu/command_processor/commandProcessor.h
 index 799f5bd3..22d1731c 100644
 --- a/src/graphics/guest_gpu/command_processor/commandProcessor.h
@@ -8047,10 +8078,10 @@ index a1bd8541..1d4482dc 100644
  	image.allocation = nullptr;
 diff --git a/src/graphics/presentation/astroEyeResolution.h b/src/graphics/presentation/astroEyeResolution.h
 new file mode 100644
-index 00000000..7849092e
+index 00000000..0e196bf6
 --- /dev/null
 +++ b/src/graphics/presentation/astroEyeResolution.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,176 @@
 +// Resolution descriptors of the guarded PPSA21567 v01.019 conversion.
 +// Verify every descriptor before changing any of them.
 +#pragma once
@@ -8112,6 +8143,51 @@ index 00000000..7849092e
 +    for(auto p:{0x73953ee,0x7397cb1,0x73af414}) add(p,2160,height);
 +    for(auto p:{0x2c2ded,0x745de71,0x73ddf9d}) { add(p,3840,width); add(p+4,2160,height); }
 +    add(0x73de287,3840,width,2); add(0x73de289,2160,height,2);
++    // Resize persistent half-res SSR/HDR/Screen-Space-Shadow history buffers (ssrHistory0/1, hdrHistory,
++    // sssHistory0/1) and full-res pssrHistory so they cover the full VR eye height instead of clipping at y=2160.
++    const unsigned halfW = width / 2u, halfH = height / 2u;
++    add(0x739121fu, 1920u, halfW, 2); add(0x7391256u, 1080u, halfH, 2);
++    add(0x73913f6u, 1920u, halfW, 2); add(0x739142du, 1080u, halfH, 2);
++    add(0x739157au, 3840u, width, 2); add(0x73915abu, 2160u, height, 2);
++    // Resize tiled deferred lighting buffers (light_index_list, directional_light_flag, light_start_index,
++    // and the 4 per-class tile index lists) from 240x135 (32,400 tiles, 3840x2160 / 16) to cover the full VR eye,
++    // and patch the scene-lighting CB writer at 0x70c6a09 (VA 0x74b6a09) so DeferredLighting reads the actual
++    // render tile grid (renderW/16, renderH/16) instead of stale (240, 135).
++    const unsigned renderW = (scale < 1.0) ? input(width) : width;
++    const unsigned renderH = (scale < 1.0) ? input(height) : height;
++    const unsigned renderTileW = (renderW + 15u) / 16u;
++    const unsigned renderTileH = (renderH + 15u) / 16u;
++    const unsigned neededTiles = renderTileW * renderTileH;
++    const unsigned tileCount = neededTiles > 32400u ? neededTiles : 32400u;
++    add(0x7391c08u, 33177600u, tileCount * 1024u);
++    add(0x7391d26u, 129600u, tileCount * 4u);
++    add(0x7391e44u, 129600u, tileCount * 4u);
++    add(0x7391fb0u, 129604u, tileCount * 4u + 4u);
++    {
++        // Replace 21 bytes at raw 0x70c6a09 (VA 0x74b6a09):
++        //   41 89 87 b0 29 00 00   movl %eax, 0x29b0(%r15)
++        //   41 8b 86 b4 73 00 00   movl 0x73b4(%r14), %eax
++        //   41 89 87 b4 29 00 00   movl %eax, 0x29b4(%r15)
++        // with:
++        //   48 b8 <renderTileW:u32> <renderTileH:u32>   movabsq $(renderTileH<<32|renderTileW), %rax
++        //   49 89 87 b0 29 00 00                        movq %rax, 0x29b0(%r15)
++        //   90 90 90 90                                 nop x4
++        constexpr unsigned char orig21[21] = {
++            0x41,0x89,0x87,0xb0,0x29,0x00,0x00,
++            0x41,0x8b,0x86,0xb4,0x73,0x00,0x00,
++            0x41,0x89,0x87,0xb4,0x29,0x00,0x00
++        };
++        unsigned char repl21[21] = {
++            0x48,0xb8, 0,0,0,0, 0,0,0,0,
++            0x49,0x89,0x87,0xb0,0x29,0x00,0x00,
++            0x90,0x90,0x90,0x90
++        };
++        std::memcpy(repl21 + 2, &renderTileW, 4);
++        std::memcpy(repl21 + 6, &renderTileH, 4);
++        for (unsigned k = 0; k < 21; ++k) {
++            add(0x70c6a09u + k, orig21[k], repl21[k], 1);
++        }
++    }
 +    // Bump the four 16 MiB per-thread guest DrawCommandBuffer sizes at 0x849eb50 (3 buffered frames each):
 +    // (16, 16, 16, 32, 16) MiB -> (20, 20, 20, 32, 20) MiB (+48 MiB total) so dense VR scenes
 +    // like Archipelago do not exhaust Draw Shadow while staying safely inside the 12800 MiB direct-memory budget.
@@ -8182,8 +8258,619 @@ index 00000000..7849092e
 +}
 +}
 +#endif
+diff --git a/src/graphics/presentation/cameraOverride.h b/src/graphics/presentation/cameraOverride.h
+new file mode 100644
+index 00000000..d5918b87
+--- /dev/null
++++ b/src/graphics/presentation/cameraOverride.h
+@@ -0,0 +1,155 @@
++#pragma once
++
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include <cstring>
++#include <cstdlib>
++#include <algorithm>
++
++namespace Libs::Vr {
++using CameraMatrix = std::array<float, 16>;
++
++struct EyeProjection {
++	float sx, sy, ox, oy;
++};
++
++inline bool GetEyeProjection(const std::array<float, 4>& angles, EyeProjection& out) {
++	for (float angle: angles)
++		if (!std::isfinite(angle) || std::abs(angle) >= 1.55f) return false;
++	const auto [left, right, up, down] = angles;
++	if (!(left < 0 && right > 0 && up > 0 && down < 0)) return false;
++	const float l = std::tan(left), r = std::tan(right);
++	const float u = std::tan(up), d = std::tan(down);
++	out = {2 / (r - l), 2 / (u - d), (r + l) / (r - l), (u + d) / (u - d)};
++	return true;
++}
++
++inline CameraMatrix CameraMultiply(const CameraMatrix& a, const CameraMatrix& b) {
++	CameraMatrix out {};
++	for (size_t i = 0; i < 4; ++i)
++		for (size_t j = 0; j < 4; ++j)
++			for (size_t k = 0; k < 4; ++k)
++				out[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
++	return out;
++}
++
++inline bool CameraNear(const CameraMatrix& a, const CameraMatrix& b, float tolerance = 0.003f) {
++	for (size_t i = 0; i < a.size(); ++i)
++		if (!std::isfinite(a[i]) || !std::isfinite(b[i]) || std::abs(a[i] - b[i]) > tolerance)
++			return false;
++	return true;
++}
++
++inline bool RotateCameraBlock(std::array<float, 144>& data, const CameraMatrix& rotation,
++                              const CameraMatrix* previous_rotation = nullptr,
++                              const EyeProjection* lens = nullptr,
++                              const EyeProjection* previous_lens = nullptr) {
++	const auto read = [&](size_t offset) {
++		CameraMatrix value {};
++		std::memcpy(value.data(), data.data() + offset / sizeof(float), sizeof(value));
++		return value;
++	};
++	const auto write = [&](size_t offset, const CameraMatrix& value) {
++		std::memcpy(data.data() + offset / sizeof(float), value.data(), sizeof(value));
++	};
++	const CameraMatrix identity {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++	const auto         view = read(64), inverse_view = read(192);
++	auto projection = read(128);
++	if (std::abs(projection[11] + 1.0f) > 0.0001f || data[108] < 320 || data[108] > 16384 ||
++	    data[109] < 240 || data[109] > 16384 ||
++	    !CameraNear(CameraMultiply(view, projection), read(0)) ||
++	    !CameraNear(CameraMultiply(view, inverse_view), identity) ||
++	    !CameraNear(CameraMultiply(projection, read(256)), identity))
++		return false;
++	CameraMatrix inverse_rotation = identity;
++	for (size_t i = 0; i < 3; ++i)
++		for (size_t j = 0; j < 3; ++j)
++			inverse_rotation[i * 4 + j] = rotation[j * 4 + i];
++	CameraMatrix rotation_only = rotation;
++	rotation_only[12] = rotation_only[13] = rotation_only[14] = 0;
++	if (!CameraNear(CameraMultiply(rotation_only, inverse_rotation), identity, 0.0001f))
++		return false;
++	CameraMatrix inverse_transform = inverse_rotation;
++	for (size_t j = 0; j < 3; ++j)
++		for (size_t k = 0; k < 3; ++k)
++			inverse_transform[12 + j] -= rotation[12 + k] * inverse_rotation[k * 4 + j];
++	if (!CameraNear(CameraMultiply(rotation, inverse_transform), identity, 0.0001f)) return false;
++	const auto previous_view = read(512), previous_vp = read(320);
++	CameraMatrix previous_projection = projection;
++	if (previous_rotation != nullptr) {
++		// Recover the previous projection, including its original TAA jitter, instead
++		// of replacing it with this frame's projection. Camera views are rigid affine.
++		CameraMatrix inverse_previous_view = identity;
++		for (size_t i = 0; i < 3; ++i)
++			for (size_t j = 0; j < 3; ++j)
++				inverse_previous_view[i * 4 + j] = previous_view[j * 4 + i];
++		for (size_t j = 0; j < 3; ++j)
++			for (size_t k = 0; k < 3; ++k)
++				inverse_previous_view[12 + j] -= previous_view[12 + k] * inverse_previous_view[k * 4 + j];
++		if (!CameraNear(CameraMultiply(previous_view, inverse_previous_view), identity)) return false;
++		previous_projection = CameraMultiply(inverse_previous_view, previous_vp);
++		if (!CameraNear(previous_projection, projection, 0.05f)) return false;
++	} else if (!CameraNear(CameraMultiply(previous_view, projection), previous_vp, 0.05f)) {
++		return false;
++	}
++	// Scale clip-space X/Y consistently, including the jitter and inverse projection.
++	static const float coverage = [] {
++		const char* value = std::getenv("KYTY_VR_FOV_COVERAGE");
++		const float parsed = value ? std::strtof(value, nullptr) : 1.0f;
++		return std::isfinite(parsed) ? std::clamp(parsed, 1.0f, 2.5f) : 1.0f;
++	}();
++	if (lens) {
++		const auto clip_remap = [&](const CameraMatrix& p, const EyeProjection& eye) {
++			auto remap = identity;
++			remap[0] = eye.sx / p[0];
++			remap[5] = eye.sy / p[5];
++			remap[12] = -eye.ox;
++			remap[13] = -eye.oy;
++			return remap;
++		};
++		if (projection[0] <= 0 || projection[5] <= 0 ||
++		    previous_projection[0] <= 0 || previous_projection[5] <= 0) return false;
++		const auto remap = clip_remap(projection, *lens);
++		auto inverse_remap = identity;
++		inverse_remap[0] = 1 / remap[0];
++		inverse_remap[5] = 1 / remap[5];
++		inverse_remap[12] = -remap[12] / remap[0];
++		inverse_remap[13] = -remap[13] / remap[5];
++		projection = CameraMultiply(projection, remap);
++		previous_projection = CameraMultiply(previous_projection,
++		    clip_remap(previous_projection, previous_lens ? *previous_lens : *lens));
++		write(128, projection);
++		write(256, CameraMultiply(inverse_remap, read(256)));
++	} else if (coverage != 1.0f) {
++		auto inverse_projection = read(256);
++		for (size_t row = 0; row < 4; ++row) {
++			projection[row * 4] /= coverage;
++			projection[row * 4 + 1] /= coverage;
++			previous_projection[row * 4] /= coverage;
++			previous_projection[row * 4 + 1] /= coverage;
++		}
++		for (size_t column = 0; column < 4; ++column) {
++			inverse_projection[column] *= coverage;
++			inverse_projection[4 + column] *= coverage;
++		}
++		write(128, projection);
++		write(256, inverse_projection);
++	}
++	const auto new_previous_view = CameraMultiply(previous_view,
++	    previous_rotation != nullptr ? *previous_rotation : rotation);
++	// Validate everything before modifying the caller's block.
++	const auto new_view = CameraMultiply(view, rotation);
++	write(64, new_view);
++	write(0, CameraMultiply(new_view, projection));
++	const auto new_inverse_view = CameraMultiply(inverse_transform, inverse_view);
++	write(192, new_inverse_view);
++	for (size_t i = 0; i < 3; ++i) {
++		data[100 + i] = new_inverse_view[12 + i];
++		data[116 + i] = new_inverse_view[12 + i];
++	}
++	write(512, new_previous_view);
++	write(320, CameraMultiply(new_previous_view, previous_projection));
++	return true;
++}
++} // namespace Libs::Vr
+diff --git a/src/graphics/presentation/cameraTracking.h b/src/graphics/presentation/cameraTracking.h
+new file mode 100644
+index 00000000..501ca054
+--- /dev/null
++++ b/src/graphics/presentation/cameraTracking.h
+@@ -0,0 +1,335 @@
++#pragma once
++#include "graphics/presentation/cameraOverride.h"
++#include "graphics/presentation/vrInput.h"
++
++#include <atomic>
++#include <cstdlib>
++#include <mutex>
++
++namespace Libs::Vr {
++inline std::atomic<unsigned long long> camera_frame {0};
++inline bool                            FlatCameraVrEnabled() {
++    static const bool enabled = [] {
++        const char* p = std::getenv("KYTY_FLAT_CAMERA_VR");
++        return p && p[0] == '1';
++    }();
++    return enabled;
++}
++inline bool FlatStereoEnabled() {
++	static const bool enabled = [] {
++		const char* p = std::getenv("KYTY_FLAT_STEREO");
++		return p && p[0] == '1';
++	}();
++	return FlatCameraVrEnabled() && enabled;
++}
++inline bool SameFrameStereoEnabled() {
++	static const bool enabled = [] {
++		const char* p = std::getenv("KYTY_FLAT_STEREO_SAME_FRAME");
++		return p && p[0] == '1';
++	}();
++	return FlatStereoEnabled() && enabled;
++}
++inline bool HeadsetProjectionEnabled() {
++	static const bool enabled = [] {
++		const char* value = std::getenv("ASTROHYBRID_VR_HEADSET_PROJECTION");
++		return SameFrameStereoEnabled() && value && value[0] == '1' && value[1] == '\0';
++	}();
++	return enabled;
++}
++inline thread_local int camera_eye_override = -1;
++class CameraEyeScope {
++public:
++	explicit CameraEyeScope(int eye): previous(camera_eye_override) { camera_eye_override = eye; }
++	~CameraEyeScope() { camera_eye_override = previous; }
++	CameraEyeScope(const CameraEyeScope&) = delete;
++	CameraEyeScope& operator=(const CameraEyeScope&) = delete;
++private:
++	int previous;
++};
++inline int CameraRenderEye() {
++	if (camera_eye_override >= 0) return camera_eye_override;
++	if (SameFrameStereoEnabled()) return 0;
++	return static_cast<int>(camera_frame.load(std::memory_order_relaxed) & 1);
++}
++inline CameraMatrix CameraEyeInverse(const VrPose& eye) {
++	const float x = -eye.orientation[0], y = -eye.orientation[1], z = -eye.orientation[2],
++	            w = eye.orientation[3];
++	CameraMatrix out {1 - 2 * (y * y + z * z),
++	                  2 * (x * y + z * w),
++	                  2 * (x * z - y * w),
++	                  0,
++	                  2 * (x * y - z * w),
++	                  1 - 2 * (x * x + z * z),
++	                  2 * (y * z + x * w),
++	                  0,
++	                  2 * (x * z + y * w),
++	                  2 * (y * z - x * w),
++	                  1 - 2 * (x * x + y * y),
++	                  0,
++	                  0,
++	                  0,
++	                  0,
++	                  1};
++	for (size_t j = 0; j < 3; ++j)
++		for (size_t k = 0; k < 3; ++k)
++			out[12 + j] -= eye.position[k] * out[k * 4 + j];
++	return out;
++}
++inline void AdvanceCameraFrame() {
++	camera_frame.fetch_add(1, std::memory_order_relaxed);
++}
++inline VrFramePose camera_frame_pose;
++inline VrFramePose camera_previous_pose;
++inline CameraMatrix camera_previous_head {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++
++struct VrCullState {
++	CameraMatrix head {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++	std::array<std::array<float, 4>, 2> fovs {};
++	bool has_fovs = false;
++	bool headset_projection = false;
++	bool active = false;
++};
++
++namespace detail {
++inline std::mutex& CameraTrackingMutex() {
++	static std::mutex mutex;
++	return mutex;
++}
++inline std::atomic<unsigned long long>& CameraTrackingLastFrame() {
++	static std::atomic<unsigned long long> last_frame {~0ULL};
++	return last_frame;
++}
++inline CameraMatrix& CameraTrackingHeadResult() {
++	static CameraMatrix result {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++	return result;
++}
++inline std::array<float, 4>& CameraTrackingReference() {
++	static std::array<float, 4> reference {0, 0, 0, 1};
++	return reference;
++}
++inline std::array<float, 3>& CameraTrackingReferencePos() {
++	static std::array<float, 3> reference_position {};
++	return reference_position;
++}
++inline bool& CameraTrackingHaveReference() {
++	static bool have_reference = false;
++	return have_reference;
++}
++inline uint64_t& CameraTrackingRefGeneration() {
++	static uint64_t reference_generation = 0;
++	return reference_generation;
++}
++inline CameraMatrix MakeTestHeadTransform(uint64_t frame) {
++	static const float test_yaw_deg = [] {
++		const char* v = std::getenv("KYTY_VR_TEST_YAW");
++		return v ? std::clamp(std::strtof(v, nullptr), -180.0f, 180.0f) : 0.0f;
++	}();
++	static const float test_pitch_deg = [] {
++		const char* v = std::getenv("KYTY_VR_TEST_PITCH");
++		return v ? std::clamp(std::strtof(v, nullptr), -85.0f, 85.0f) : 0.0f;
++	}();
++	static const float sweep_deg = [] {
++		const char* v = std::getenv("KYTY_VR_TEST_YAW_SWEEP");
++		return v ? std::clamp(std::strtof(v, nullptr), 0.0f, 180.0f) : 0.0f;
++	}();
++	float yaw_deg = test_yaw_deg;
++	if (sweep_deg > 0.0f) {
++		yaw_deg += sweep_deg * std::sin(static_cast<float>(frame) * 0.04f);
++	}
++	if (yaw_deg == 0.0f && test_pitch_deg == 0.0f) {
++		return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++	}
++	constexpr float kDegToRad = 0.017453292519943295f;
++	const float yaw = yaw_deg * kDegToRad;
++	const float pitch = test_pitch_deg * kDegToRad;
++	const float cy = std::cos(yaw), sy = std::sin(yaw);
++	const float cp = std::cos(pitch), sp = std::sin(pitch);
++	const CameraMatrix ry {cy, 0, sy, 0, 0, 1, 0, 0, -sy, 0, cy, 0, 0, 0, 0, 1};
++	const CameraMatrix rx {1, 0, 0, 0, 0, cp, -sp, 0, 0, sp, cp, 0, 0, 0, 0, 1};
++	return CameraMultiply(ry, rx);
++}
++inline CameraMatrix ComputeRelativeHeadTransform(const VrPose& pose,
++                                                 const std::array<float, 4>& reference,
++                                                 const std::array<float, 3>& reference_position) {
++	std::array<float, 4> q {};
++	float norm = 0;
++	for (size_t i = 0; i < 4; ++i) norm += pose.orientation[i] * pose.orientation[i];
++	if (!std::isfinite(norm) || norm < 0.5f || norm > 1.5f) {
++		return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++	}
++	norm = std::sqrt(norm);
++	for (size_t i = 0; i < 4; ++i) q[i] = pose.orientation[i] / norm;
++	const float ax = -q[0], ay = -q[1], az = -q[2], aw = q[3];
++	const float bx = reference[0], by = reference[1], bz = reference[2], bw = reference[3];
++	const float x = aw * bx + ax * bw + ay * bz - az * by;
++	const float y = aw * by - ax * bz + ay * bw + az * bx;
++	const float z = aw * bz + ax * by - ay * bx + az * bw;
++	const float w = aw * bw - ax * bx - ay * by - az * bz;
++	CameraMatrix result {1 - 2 * (y * y + z * z),
++	                     2 * (x * y + z * w),
++	                     2 * (x * z - y * w),
++	                     0,
++	                     2 * (x * y - z * w),
++	                     1 - 2 * (x * x + z * z),
++	                     2 * (y * z + x * w),
++	                     0,
++	                     2 * (x * z + y * w),
++	                     2 * (y * z - x * w),
++	                     1 - 2 * (x * x + y * y),
++	                     0,
++	                     0,
++	                     0,
++	                     0,
++	                     1};
++	const float rx = -reference[0], ry = -reference[1], rz = -reference[2], rw = reference[3];
++	const CameraMatrix reference_inverse {1 - 2 * (ry * ry + rz * rz),
++	                                      2 * (rx * ry + rz * rw),
++	                                      2 * (rx * rz - ry * rw),
++	                                      0,
++	                                      2 * (rx * ry - rz * rw),
++	                                      1 - 2 * (rx * rx + rz * rz),
++	                                      2 * (ry * rz + rx * rw),
++	                                      0,
++	                                      2 * (rx * rz + ry * rw),
++	                                      2 * (ry * rz - rx * rw),
++	                                      1 - 2 * (rx * rx + ry * ry),
++	                                      0,
++	                                      0,
++	                                      0,
++	                                      0,
++	                                      1};
++	std::array<float, 3> delta {}, local {};
++	float distance = 0;
++	for (size_t i = 0; i < 3; ++i) {
++		delta[i] = pose.position[i] - reference_position[i];
++		distance += delta[i] * delta[i];
++	}
++	if (std::isfinite(distance) && distance < 4.0f) {
++		for (size_t j = 0; j < 3; ++j)
++			for (size_t k = 0; k < 3; ++k)
++				local[j] += delta[k] * reference_inverse[k * 4 + j];
++		for (size_t j = 0; j < 3; ++j)
++			for (size_t k = 0; k < 3; ++k)
++				result[12 + j] -= local[k] * result[k * 4 + j];
++	}
++	return result;
++}
++} // namespace detail
++
++inline CameraMatrix CameraTrackingHeadTransform() {
++	const auto frame = camera_frame.load(std::memory_order_relaxed);
++	if (detail::CameraTrackingLastFrame().load(std::memory_order_acquire) == frame) {
++		return detail::CameraTrackingHeadResult();
++	}
++	std::lock_guard lock(detail::CameraTrackingMutex());
++	if (detail::CameraTrackingLastFrame().load(std::memory_order_relaxed) == frame) {
++		return detail::CameraTrackingHeadResult();
++	}
++	auto& result = detail::CameraTrackingHeadResult();
++	auto& reference = detail::CameraTrackingReference();
++	auto& reference_position = detail::CameraTrackingReferencePos();
++	auto& have_reference = detail::CameraTrackingHaveReference();
++	auto& reference_generation = detail::CameraTrackingRefGeneration();
++	camera_previous_head = result;
++	camera_previous_pose = camera_frame_pose;
++	const auto frame_pose = OpenXrGetFramePose();
++	const auto& pose = frame_pose.head;
++	if (!pose.valid) {
++		result = detail::MakeTestHeadTransform(frame);
++		detail::CameraTrackingLastFrame().store(frame, std::memory_order_release);
++		return result;
++	}
++	std::array<float, 4> q {};
++	float norm = 0;
++	for (size_t i = 0; i < 4; ++i) norm += pose.orientation[i] * pose.orientation[i];
++	if (!std::isfinite(norm) || norm < 0.5f || norm > 1.5f) {
++		detail::CameraTrackingLastFrame().store(frame, std::memory_order_release);
++		return result;
++	}
++	norm = std::sqrt(norm);
++	for (size_t i = 0; i < 4; ++i) q[i] = pose.orientation[i] / norm;
++	camera_frame_pose = frame_pose;
++	const bool recentered = recenter_requested.exchange(false, std::memory_order_relaxed) ||
++	                        frame_pose.recenter_generation != reference_generation;
++	if (!have_reference || recentered) {
++		reference = q;
++		reference_generation = frame_pose.recenter_generation;
++		for (size_t i = 0; i < 3; ++i) reference_position[i] = pose.position[i];
++		have_reference = true;
++	}
++	result = detail::ComputeRelativeHeadTransform(pose, reference, reference_position);
++	const auto test_rot = detail::MakeTestHeadTransform(frame);
++	if (test_rot[0] != 1.0f || test_rot[5] != 1.0f || test_rot[10] != 1.0f) {
++		result = CameraMultiply(result, test_rot);
++	}
++	if (recentered || !camera_previous_pose.head.valid) {
++		camera_previous_head = result;
++		camera_previous_pose = camera_frame_pose;
++	}
++	detail::CameraTrackingLastFrame().store(frame, std::memory_order_release);
++	return result;
++}
++
++inline VrCullState GetLatestVrCullState() {
++	VrCullState state {};
++	if (!FlatCameraVrEnabled()) return state;
++	state.active = true;
++	state.headset_projection = HeadsetProjectionEnabled();
++	const auto frame_pose = OpenXrGetFramePose();
++	std::array<float, 4> reference {};
++	std::array<float, 3> reference_pos {};
++	bool have_ref = false;
++	CameraMatrix latched_head {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
++	{
++		std::lock_guard lock(detail::CameraTrackingMutex());
++		have_ref = detail::CameraTrackingHaveReference();
++		reference = detail::CameraTrackingReference();
++		reference_pos = detail::CameraTrackingReferencePos();
++		latched_head = detail::CameraTrackingHeadResult();
++	}
++	if (frame_pose.head.valid && have_ref) {
++		state.head = detail::ComputeRelativeHeadTransform(frame_pose.head, reference, reference_pos);
++		const auto test_rot = detail::MakeTestHeadTransform(camera_frame.load(std::memory_order_relaxed));
++		if (test_rot[0] != 1.0f || test_rot[5] != 1.0f || test_rot[10] != 1.0f) {
++			state.head = CameraMultiply(state.head, test_rot);
++		}
++		EyeProjection l0 {}, l1 {};
++		if (GetEyeProjection(frame_pose.fovs[0], l0) && GetEyeProjection(frame_pose.fovs[1], l1)) {
++			state.fovs = frame_pose.fovs;
++			state.has_fovs = true;
++		}
++	} else {
++		state.head = latched_head;
++		const auto test_rot = detail::MakeTestHeadTransform(camera_frame.load(std::memory_order_relaxed));
++		if (!frame_pose.head.valid) {
++			state.head = test_rot;
++		}
++	}
++	return state;
++}
++struct TrackedCameraTransforms {
++	CameraMatrix head, current, previous;
++	uint64_t frame = ~uint64_t{0};
++};
++
++inline const TrackedCameraTransforms& CameraTrackingTransforms() {
++	// The head and both runtime eye poses are latched once per guest flip.
++	// Guest camera constants may still change between draws within that flip.
++	static thread_local std::array<TrackedCameraTransforms, 2> transforms {};
++	const auto eye = CameraRenderEye();
++	auto& result = transforms[eye];
++	const auto frame = camera_frame.load(std::memory_order_relaxed);
++	if (result.frame == frame) return result;
++	result.head = CameraTrackingHeadTransform();
++	result.current = result.head;
++	result.previous = camera_previous_head;
++	if (FlatStereoEnabled()) {
++		const auto& current = camera_frame_pose.eyes[eye];
++		const auto& previous = camera_previous_pose.eyes[eye];
++		if (current.valid) result.current = CameraMultiply(result.head, CameraEyeInverse(current));
++		if (previous.valid) result.previous = CameraMultiply(camera_previous_head, CameraEyeInverse(previous));
++	}
++	result.frame = frame;
++	return result;
++}
++} // namespace Libs::Vr
+diff --git a/src/graphics/presentation/cameraUpload.h b/src/graphics/presentation/cameraUpload.h
+new file mode 100644
+index 00000000..df9ad96f
+--- /dev/null
++++ b/src/graphics/presentation/cameraUpload.h
+@@ -0,0 +1,103 @@
++#pragma once
++
++#include "graphics/presentation/stereoFrame.h"
++
++namespace Libs::Vr {
++
++// CPU results only: every acquisition still reads authoritative guest bytes and obtains a
++// fresh GPU upload. Never retain an upload offset across command buffers or stream wraps.
++class CameraUploadMemo {
++public:
++	struct Result {
++		CameraBlock camera;
++		std::optional<StereoFrame> paired;
++		bool transformed = false;
++		const void* upload_stream = nullptr;
++		uint64_t upload_tick = UINT64_MAX;
++		uint64_t upload_offset = 0;
++	};
++	Result& PrepareRaw(uint64_t frame, int eye, const float* source_ptr,
++	                   const CameraMatrix& head, const VrFramePose& pose,
++	                   const CameraMatrix& rotation, const CameraMatrix& previous,
++	                   bool* cache_hit = nullptr) {
++		const auto matches = [&](const Entry& entry) {
++			return entry.used && entry.frame == frame && entry.eye == eye &&
++			       std::memcmp(entry.source.data(), source_ptr, sizeof(entry.source)) == 0 &&
++			       Same(entry.head, head) && Same(entry.rotation, rotation) &&
++			       Same(entry.previous, previous) &&
++			       SamePose(entry.pose.head, pose.head) &&
++			       SamePose(entry.pose.eyes[0], pose.eyes[0]) &&
++			       SamePose(entry.pose.eyes[1], pose.eyes[1]) &&
++			       entry.pose.fovs == pose.fovs;
++		};
++		if (matches(entries[last_hit])) {
++			if (cache_hit) *cache_hit = true;
++			return entries[last_hit].result;
++		}
++		for (size_t i = 0; i < entries.size(); ++i) {
++			if (i == last_hit) continue;
++			if (matches(entries[i])) {
++				last_hit = i;
++				if (cache_hit) *cache_hit = true;
++				return entries[i].result;
++			}
++		}
++		const size_t idx = next++ % entries.size();
++		last_hit = idx;
++		auto& entry = entries[idx];
++		entry.used = true;
++		entry.frame = frame;
++		entry.eye = eye;
++		std::memcpy(entry.source.data(), source_ptr, sizeof(entry.source));
++		entry.head = head;
++		entry.pose = pose;
++		entry.rotation = rotation;
++		entry.previous = previous;
++		entry.result.camera = entry.source;
++		entry.result.upload_stream = nullptr;
++		entry.result.upload_tick = UINT64_MAX;
++		entry.result.upload_offset = 0;
++		entry.result.paired = PrepareStereoFrame(frame, entry.source, head, pose, camera_previous_head,
++		                                          camera_previous_pose, HeadsetProjectionEnabled());
++		if (entry.result.paired && entry.result.paired->headset_projection) {
++			entry.result.camera = entry.result.paired->cameras[eye];
++			entry.result.transformed = true;
++		} else {
++			entry.result.transformed = RotateCameraBlock(entry.result.camera, rotation, &previous);
++		}
++		++preparations;
++		if (cache_hit) *cache_hit = false;
++		return entry.result;
++	}
++	const Result& Prepare(uint64_t frame, int eye, const CameraBlock& source,
++	                      const CameraMatrix& head, const VrFramePose& pose,
++	                      const CameraMatrix& rotation, const CameraMatrix& previous) {
++		return PrepareRaw(frame, eye, source.data(), head, pose, rotation, previous);
++	}
++	uint64_t Preparations() const { return preparations; }
++
++private:
++	template <typename T> static bool Same(const T& a, const T& b) {
++		return std::memcmp(a.data(), b.data(), sizeof(a)) == 0;
++	}
++	static bool SamePose(const VrPose& a, const VrPose& b) {
++		return a.valid == b.valid &&
++		       std::memcmp(a.orientation, b.orientation, sizeof(a.orientation)) == 0 &&
++		       std::memcmp(a.position, b.position, sizeof(a.position)) == 0;
++	}
++	struct Entry {
++		bool used = false;
++		uint64_t frame = 0;
++		int eye = 0;
++		CameraBlock source;
++		CameraMatrix head, rotation, previous;
++		VrFramePose pose;
++		Result result;
++	};
++	std::array<Entry, 8> entries;
++	size_t next = 0;
++	size_t last_hit = 0;
++	uint64_t preparations = 0;
++};
++
++} // namespace Libs::Vr
 diff --git a/src/graphics/presentation/openxrHeadset.cpp b/src/graphics/presentation/openxrHeadset.cpp
-index bbfb9446..c5f8927f 100644
+index bbfb9446..b84d10bb 100644
 --- a/src/graphics/presentation/openxrHeadset.cpp
 +++ b/src/graphics/presentation/openxrHeadset.cpp
 @@ -1,19 +1,32 @@
@@ -8219,7 +8906,113 @@ index bbfb9446..c5f8927f 100644
  #include <cmath>
  #include <cstdlib>
  #include <cstring>
-@@ -56,8 +69,17 @@ constexpr int STAGING_COUNT = 3;
+@@ -30,22 +43,94 @@ namespace {
+ 
+ using namespace Libs::Graphics;
+ 
+-enum Action { TRIGGER, SQUEEZE, STICK, STICK_CLICK, PRIMARY, SECONDARY, MENU, GRIP, ACTION_COUNT };
++enum Action { TRIGGER, SQUEEZE, STICK, STICK_CLICK, PRIMARY, SECONDARY, MENU, GRIP, HAPTIC, ACTION_COUNT };
+ 
+-// Touch controller bindings: the path under /user/hand/<side>/input/ per hand, or null.
+ constexpr struct {
+ 	const char*  name;
+ 	XrActionType type;
+-	const char*  path[2];
+ } ACTIONS[ACTION_COUNT] = {
+-    {"trigger", XR_ACTION_TYPE_FLOAT_INPUT, {"trigger/value", "trigger/value"}},
+-    {"squeeze", XR_ACTION_TYPE_FLOAT_INPUT, {"squeeze/value", "squeeze/value"}},
+-    {"thumbstick", XR_ACTION_TYPE_VECTOR2F_INPUT, {"thumbstick", "thumbstick"}},
+-    {"thumbstick_click", XR_ACTION_TYPE_BOOLEAN_INPUT, {"thumbstick/click", "thumbstick/click"}},
+-    {"primary", XR_ACTION_TYPE_BOOLEAN_INPUT, {"x/click", "a/click"}},
+-    {"secondary", XR_ACTION_TYPE_BOOLEAN_INPUT, {"y/click", "b/click"}},
+-    {"menu", XR_ACTION_TYPE_BOOLEAN_INPUT, {"menu/click", nullptr}},
+-    {"grip_pose", XR_ACTION_TYPE_POSE_INPUT, {"grip/pose", "grip/pose"}},
++    {"trigger", XR_ACTION_TYPE_FLOAT_INPUT},
++    {"squeeze", XR_ACTION_TYPE_FLOAT_INPUT},
++    {"thumbstick", XR_ACTION_TYPE_VECTOR2F_INPUT},
++    {"thumbstick_click", XR_ACTION_TYPE_BOOLEAN_INPUT},
++    {"primary", XR_ACTION_TYPE_BOOLEAN_INPUT},
++    {"secondary", XR_ACTION_TYPE_BOOLEAN_INPUT},
++    {"menu", XR_ACTION_TYPE_BOOLEAN_INPUT},
++    {"grip_pose", XR_ACTION_TYPE_POSE_INPUT},
++    {"haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT},
++};
++
++struct ProfileSpec {
++	const char* profile;
++	const char* path[ACTION_COUNT][2]; // Relative to /user/hand/<side>/, or nullptr.
++};
++
++constexpr ProfileSpec INTERACTION_PROFILES[] = {
++    // Quest / Rift / Link / Virtual Desktop / Steam Link
++    {"/interaction_profiles/oculus/touch_controller",
++     {
++         {"input/trigger/value", "input/trigger/value"},
++         {"input/squeeze/value", "input/squeeze/value"},
++         {"input/thumbstick", "input/thumbstick"},
++         {"input/thumbstick/click", "input/thumbstick/click"},
++         {"input/x/click", "input/a/click"},
++         {"input/y/click", "input/b/click"},
++         {"input/menu/click", nullptr},
++         {"input/grip/pose", "input/grip/pose"},
++         {"output/haptic", "output/haptic"},
++     }},
++    // Valve Index Knuckles
++    {"/interaction_profiles/valve/index_controller",
++     {
++         {"input/trigger/value", "input/trigger/value"},
++         {"input/squeeze/value", "input/squeeze/value"},
++         {"input/thumbstick", "input/thumbstick"},
++         {"input/thumbstick/click", "input/thumbstick/click"},
++         {"input/a/click", "input/a/click"},
++         {"input/b/click", "input/b/click"},
++         {"input/trackpad/click", nullptr},
++         {"input/grip/pose", "input/grip/pose"},
++         {"output/haptic", "output/haptic"},
++     }},
++    // Windows Mixed Reality
++    {"/interaction_profiles/microsoft/motion_controller",
++     {
++         {"input/trigger/value", "input/trigger/value"},
++         {"input/squeeze/click", "input/squeeze/click"},
++         {"input/thumbstick", "input/thumbstick"},
++         {"input/thumbstick/click", "input/thumbstick/click"},
++         {"input/trackpad/click", "input/trackpad/click"},
++         {nullptr, "input/menu/click"},
++         {"input/menu/click", nullptr},
++         {"input/grip/pose", "input/grip/pose"},
++         {"output/haptic", "output/haptic"},
++     }},
++    // HTC Vive Wands
++    {"/interaction_profiles/htc/vive_controller",
++     {
++         {"input/trigger/value", "input/trigger/value"},
++         {"input/squeeze/click", "input/squeeze/click"},
++         {"input/trackpad", "input/trackpad"},
++         {nullptr, nullptr},
++         {"input/trackpad/click", "input/trackpad/click"},
++         {nullptr, "input/menu/click"},
++         {"input/menu/click", nullptr},
++         {"input/grip/pose", "input/grip/pose"},
++         {"output/haptic", "output/haptic"},
++     }},
++    // Universal OpenXR fallback
++    {"/interaction_profiles/khr/simple_controller",
++     {
++         {"input/select/click", "input/select/click"},
++         {nullptr, nullptr},
++         {nullptr, nullptr},
++         {nullptr, nullptr},
++         {nullptr, "input/menu/click"},
++         {nullptr, nullptr},
++         {"input/menu/click", nullptr},
++         {"input/grip/pose", "input/grip/pose"},
++         {"output/haptic", "output/haptic"},
++     }},
+ };
+ 
+ constexpr const char* HANDS[2] = {"left", "right"};
+@@ -56,8 +141,17 @@ constexpr int STAGING_COUNT = 3;
  
  struct Staging {
  	VulkanImage image;
@@ -8237,7 +9030,7 @@ index bbfb9446..c5f8927f 100644
  };
  
  struct State {
-@@ -73,23 +95,38 @@ struct State {
+@@ -73,37 +167,76 @@ struct State {
  	PFN_xrGetVulkanGraphicsDeviceKHR       get_graphics_device = nullptr;
  
  	GraphicContext*  graphics = nullptr;
@@ -8278,7 +9071,13 @@ index bbfb9446..c5f8927f 100644
  
  	XrActionSet action_set = XR_NULL_HANDLE;
  	XrAction    actions[ACTION_COUNT] {};
-@@ -100,10 +137,31 @@ struct State {
+ 	XrPath      hand_path[2] {};
+ 	XrSpace     grip_space[2] {};
++	std::atomic<float> haptic_target[2] {{0.0f}, {0.0f}};
++	bool               haptic_active[2] {false, false};
++	bool               controllers_logged = false;
+ 
+ 	std::mutex        input_mutex;
  	VrControllerInput input[2];
  	VrPose            head;
  	VrPose            last_head_read;
@@ -8310,7 +9109,99 @@ index bbfb9446..c5f8927f 100644
  bool Ok(XrResult result, const char* what) {
  	if (XR_SUCCEEDED(result)) {
  		return true;
-@@ -306,6 +364,23 @@ bool CreateInput() {
+@@ -125,6 +258,11 @@ void DestroyInstance(const char* reason) {
+ 	}
+ 	g.instance = XR_NULL_HANDLE;
+ 	g.session  = XR_NULL_HANDLE;
++	g.haptic_target[0].store(0.0f, std::memory_order_relaxed);
++	g.haptic_target[1].store(0.0f, std::memory_order_relaxed);
++	g.haptic_active[0]   = false;
++	g.haptic_active[1]   = false;
++	g.controllers_logged = false;
+ }
+ 
+ struct Access {
+@@ -256,7 +394,6 @@ bool CreateInput() {
+ 		xrStringToPath(g.instance, fmt::format("/user/hand/{}", HANDS[hand]).c_str(),
+ 		               &g.hand_path[hand]);
+ 	}
+-	std::vector<XrActionSuggestedBinding> bindings;
+ 	for (int i = 0; i < ACTION_COUNT; i++) {
+ 		XrActionCreateInfo info {XR_TYPE_ACTION_CREATE_INFO};
+ 		info.actionType          = ACTIONS[i].type;
+@@ -267,28 +404,47 @@ bool CreateInput() {
+ 		if (!Ok(xrCreateAction(g.action_set, &info, &g.actions[i]), "xrCreateAction")) {
+ 			return false;
+ 		}
+-		for (int hand = 0; hand < 2; hand++) {
+-			if (ACTIONS[i].path[hand] != nullptr) {
+-				XrPath path = XR_NULL_PATH;
+-				xrStringToPath(
+-				    g.instance,
+-				    fmt::format("/user/hand/{}/input/{}", HANDS[hand], ACTIONS[i].path[hand])
+-				        .c_str(),
+-				    &path);
+-				bindings.push_back({g.actions[i], path});
++	}
++	int suggested_profiles = 0;
++	for (const auto& spec : INTERACTION_PROFILES) {
++		std::vector<XrActionSuggestedBinding> bindings;
++		for (int i = 0; i < ACTION_COUNT; i++) {
++			for (int hand = 0; hand < 2; hand++) {
++				if (spec.path[i][hand] != nullptr) {
++					XrPath path = XR_NULL_PATH;
++					if (XR_SUCCEEDED(xrStringToPath(
++					        g.instance,
++					        fmt::format("/user/hand/{}/{}", HANDS[hand], spec.path[i][hand]).c_str(),
++					        &path))) {
++						bindings.push_back({g.actions[i], path});
++					}
++				}
+ 			}
+ 		}
++		XrInteractionProfileSuggestedBinding suggested {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
++		if (!XR_SUCCEEDED(xrStringToPath(g.instance, spec.profile, &suggested.interactionProfile))) {
++			continue;
++		}
++		suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
++		suggested.suggestedBindings      = bindings.data();
++		const XrResult result = xrSuggestInteractionProfileBindings(g.instance, &suggested);
++		if (XR_SUCCEEDED(result)) {
++			++suggested_profiles;
++		} else {
++			char text[XR_MAX_RESULT_STRING_SIZE] = {};
++			xrResultToString(g.instance, result, text);
++			Log::WriteToConsoleAndLog(
++			    fmt::format("OpenXR: skipping profile '{}': {}\n", spec.profile, text));
++		}
++	}
++	if (suggested_profiles == 0) {
++		Log::WriteToConsoleAndLog("OpenXR: no controller interaction profiles accepted\n");
++		return false;
+ 	}
+-	XrInteractionProfileSuggestedBinding suggested {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+-	xrStringToPath(g.instance, "/interaction_profiles/oculus/touch_controller",
+-	               &suggested.interactionProfile);
+-	suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+-	suggested.suggestedBindings      = bindings.data();
+ 	XrSessionActionSetsAttachInfo attach {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+ 	attach.countActionSets = 1;
+ 	attach.actionSets      = &g.action_set;
+-	if (!Ok(xrSuggestInteractionProfileBindings(g.instance, &suggested), "suggest bindings") ||
+-	    !Ok(xrAttachSessionActionSets(g.session, &attach), "attach action sets")) {
++	if (!Ok(xrAttachSessionActionSets(g.session, &attach), "attach action sets")) {
+ 		return false;
+ 	}
+ 	for (int hand = 0; hand < 2; hand++) {
+@@ -300,12 +456,31 @@ bool CreateInput() {
+ 			return false;
+ 		}
+ 	}
++	Log::WriteToConsoleAndLog(
++	    fmt::format("OpenXR: controller input ready ({} profiles bound)\n", suggested_profiles));
+ 	return true;
+ }
+ 
  // The head is tracked while the frame loop runs; the controllers only while the session has focus.
  void PollInput(XrTime time) {
  	const auto        head = Locate(g.view_space, time);
@@ -8334,7 +9225,72 @@ index bbfb9446..c5f8927f 100644
  	VrControllerInput input[2];
  	XrActiveActionSet active {g.action_set, XR_NULL_PATH};
  	XrActionsSyncInfo sync {XR_TYPE_ACTIONS_SYNC_INFO};
-@@ -350,6 +425,9 @@ void PollInput(XrTime time) {
+@@ -321,11 +496,12 @@ void PollInput(XrTime time) {
+ 				read(g.session, &info, &state);
+ 				return state;
+ 			};
+-			const auto value = [&](Action action) {
+-				return get(action, xrGetActionStateFloat,
+-				           XrActionStateFloat {XR_TYPE_ACTION_STATE_FLOAT})
+-				    .currentState;
+-			};
++			const auto trigger_state = get(TRIGGER, xrGetActionStateFloat,
++			                               XrActionStateFloat {XR_TYPE_ACTION_STATE_FLOAT});
++			const auto squeeze_state = get(SQUEEZE, xrGetActionStateFloat,
++			                               XrActionStateFloat {XR_TYPE_ACTION_STATE_FLOAT});
++			const auto primary_state = get(PRIMARY, xrGetActionStateBoolean,
++			                               XrActionStateBoolean {XR_TYPE_ACTION_STATE_BOOLEAN});
+ 			const auto flag = [&](Action action) {
+ 				return get(action, xrGetActionStateBoolean,
+ 				           XrActionStateBoolean {XR_TYPE_ACTION_STATE_BOOLEAN})
+@@ -333,23 +509,50 @@ void PollInput(XrTime time) {
+ 			};
+ 			const auto stick = get(STICK, xrGetActionStateVector2f,
+ 			                       XrActionStateVector2f {XR_TYPE_ACTION_STATE_VECTOR2F});
++			const auto grip_state = get(GRIP, xrGetActionStatePose,
++			                            XrActionStatePose {XR_TYPE_ACTION_STATE_POSE});
+ 			auto&      out   = input[hand];
+-			out.trigger      = value(TRIGGER);
+-			out.squeeze      = value(SQUEEZE);
++			out.trigger      = trigger_state.currentState;
++			out.squeeze      = squeeze_state.currentState;
+ 			out.stick_x      = stick.currentState.x;
+ 			out.stick_y      = stick.currentState.y;
+ 			out.stick_click  = flag(STICK_CLICK);
+-			out.primary      = flag(PRIMARY);
++			out.primary      = primary_state.currentState == XR_TRUE;
+ 			out.secondary    = flag(SECONDARY);
+ 			out.menu         = flag(MENU);
+ 			out.pose         = Locate(g.grip_space[hand], time);
+-			out.connected =
+-			    get(GRIP, xrGetActionStatePose, XrActionStatePose {XR_TYPE_ACTION_STATE_POSE})
+-			        .isActive == XR_TRUE;
++			out.connected = grip_state.isActive == XR_TRUE || stick.isActive == XR_TRUE ||
++			                trigger_state.isActive == XR_TRUE || primary_state.isActive == XR_TRUE;
++
++			const float amp = std::clamp(g.haptic_target[hand].load(std::memory_order_relaxed), 0.0f, 1.0f);
++			XrHapticActionInfo hinfo {XR_TYPE_HAPTIC_ACTION_INFO};
++			hinfo.action        = g.actions[HAPTIC];
++			hinfo.subactionPath = g.hand_path[hand];
++			if (amp > 0.01f && out.connected) {
++				XrHapticVibration vib {XR_TYPE_HAPTIC_VIBRATION};
++				vib.duration  = 50'000'000LL;
++				vib.frequency = XR_FREQUENCY_UNSPECIFIED;
++				vib.amplitude = amp;
++				(void)xrApplyHapticFeedback(g.session, &hinfo,
++				                            reinterpret_cast<const XrHapticBaseHeader*>(&vib));
++				g.haptic_active[hand] = true;
++			} else if (g.haptic_active[hand]) {
++				(void)xrStopHapticFeedback(g.session, &hinfo);
++				g.haptic_active[hand] = false;
++			}
++		}
++		if (!g.controllers_logged && (input[0].connected || input[1].connected)) {
++			g.controllers_logged = true;
++			Log::WriteToConsoleAndLog(fmt::format(
++			    "OpenXR: VR controllers connected (left={}, right={})\n",
++			    input[0].connected ? "yes" : "no", input[1].connected ? "yes" : "no"));
+ 		}
  	}
  	std::lock_guard lock(g.input_mutex);
  	g.head     = head;
@@ -8344,7 +9300,7 @@ index bbfb9446..c5f8927f 100644
  	g.input[0] = input[0];
  	g.input[1] = input[1];
  }
-@@ -361,6 +439,14 @@ void HandleEvents() {
+@@ -361,6 +564,14 @@ void HandleEvents() {
  			g.running = false;
  			continue;
  		}
@@ -8359,7 +9315,7 @@ index bbfb9446..c5f8927f 100644
  		if (event.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
  			continue;
  		}
-@@ -389,11 +475,11 @@ void HandleEvents() {
+@@ -389,11 +600,11 @@ void HandleEvents() {
  	}
  }
  
@@ -8373,7 +9329,7 @@ index bbfb9446..c5f8927f 100644
  		if (!Ok(xrAcquireSwapchainImage(g.swapchain, &acquire, &image), "acquire")) {
  			return false;
  		}
-@@ -407,64 +493,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
+@@ -407,64 +618,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
  		vk::CommandBufferBeginInfo begin {};
  		begin.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
  		(void)g.command.begin(&begin);
@@ -8507,7 +9463,7 @@ index bbfb9446..c5f8927f 100644
  }
  
  // The game drew the picture for the head pose it read, so it is placed in the world at that pose
-@@ -479,12 +610,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -479,12 +735,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  	XrView      located[2] {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
  	uint32_t    count = 0;
  	const bool  valid =
@@ -8521,7 +9477,7 @@ index bbfb9446..c5f8927f 100644
  	// The outer side of each eye is its temporal side: left for the left eye.
  	const float out    = std::atan(Hmd2::FOV_TAN_OUT);
  	const float in     = std::atan(Hmd2::FOV_TAN_IN);
-@@ -494,15 +622,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -494,15 +747,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  		const float side = eye == 0 ? -Hmd2::EYE_OFFSET_M : Hmd2::EYE_OFFSET_M;
  		auto&       view = views[eye];
  		view.pose        = valid ? located[eye].pose : XrPosef {{0, 0, 0, 1}, {side, 0, 0}};
@@ -8553,7 +9509,7 @@ index bbfb9446..c5f8927f 100644
  		view.subImage.imageArrayIndex = static_cast<uint32_t>(eye);
  	}
  	layer.space     = head.valid ? g.local_space : g.view_space;
-@@ -511,18 +651,97 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -511,18 +776,97 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  }
  
  void ThreadMain() {
@@ -8652,7 +9608,7 @@ index bbfb9446..c5f8927f 100644
  			if (!Ok(xrBeginFrame(g.session, &begin), "xrBeginFrame")) {
  				continue;
  			}
-@@ -530,17 +749,127 @@ void ThreadMain() {
+@@ -530,17 +874,127 @@ void ThreadMain() {
  		XrCompositionLayerProjection     layer {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
  		XrCompositionLayerProjectionView views[2] {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
  		                                           {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
@@ -8786,7 +9742,7 @@ index bbfb9446..c5f8927f 100644
  	}
  }
  
-@@ -550,6 +879,8 @@ void OpenXrInit() {
+@@ -550,6 +1004,8 @@ void OpenXrInit() {
  	if (!Config::VrEnabled()) {
  		return;
  	}
@@ -8795,7 +9751,7 @@ index bbfb9446..c5f8927f 100644
  	if (const char* env = std::getenv("KYTY_OPENXR");
  	    env != nullptr && std::strcmp(env, "0") == 0) {
  		return;
-@@ -561,6 +892,33 @@ void OpenXrInit() {
+@@ -561,6 +1017,33 @@ void OpenXrInit() {
  	info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
  	info.enabledExtensionCount      = 1;
  	info.enabledExtensionNames      = extensions;
@@ -8829,7 +9785,7 @@ index bbfb9446..c5f8927f 100644
  	if (XR_FAILED(xrCreateInstance(&info, &g.instance))) {
  		DestroyInstance("no runtime available");
  		return;
-@@ -602,6 +960,64 @@ void OpenXrInit() {
+@@ -602,6 +1085,64 @@ void OpenXrInit() {
  	xrEnumerateViewConfigurationViews(g.instance, g.system,
  	                                  XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &count, views);
  	g.eye = {views[0].recommendedImageRectWidth, views[0].recommendedImageRectHeight};
@@ -8894,7 +9850,7 @@ index bbfb9446..c5f8927f 100644
  	XrSystemProperties properties {XR_TYPE_SYSTEM_PROPERTIES};
  	xrGetSystemProperties(g.instance, g.system, &properties);
  	Log::WriteToConsoleAndLog(fmt::format("OpenXR: headset '{}' ready\n", properties.systemName));
-@@ -620,6 +1036,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
+@@ -620,6 +1161,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
  			out.push_back(name.c_str());
  		}
  	}
@@ -8923,7 +9879,7 @@ index bbfb9446..c5f8927f 100644
  }
  
  bool OpenXrPhysicalDevice(vk::Instance instance, vk::PhysicalDevice& out) {
-@@ -645,12 +1083,67 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -645,12 +1208,67 @@ void OpenXrStartSession(GraphicContext& graphics) {
  		return;
  	}
  	g.graphics = &graphics;
@@ -8992,7 +9948,7 @@ index bbfb9446..c5f8927f 100644
  	XrSessionCreateInfo info {XR_TYPE_SESSION_CREATE_INFO};
  	info.next     = &binding;
  	info.systemId = g.system;
-@@ -680,6 +1173,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -680,6 +1298,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
  	(void)graphics.device.allocateCommandBuffers(&allocate, &g.command);
  	vk::FenceCreateInfo fence {};
  	(void)graphics.device.createFence(&fence, nullptr, &g.fence);
@@ -9003,7 +9959,7 @@ index bbfb9446..c5f8927f 100644
  
  	g.running = true;
  	g.thread  = std::thread(ThreadMain);
-@@ -687,18 +1184,35 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -687,18 +1309,35 @@ void OpenXrStartSession(GraphicContext& graphics) {
  
  void OpenXrShutdown() {
  	g.running = false;
@@ -9041,7 +9997,7 @@ index bbfb9446..c5f8927f 100644
  		if (slot.image.image != nullptr) {
  			g.graphics->DeleteImage(slot.image);
  		}
-@@ -708,6 +1222,57 @@ void OpenXrShutdown() {
+@@ -708,6 +1347,57 @@ void OpenXrShutdown() {
  	g.graphics = nullptr;
  }
  
@@ -9099,7 +10055,17 @@ index bbfb9446..c5f8927f 100644
  VrPose OpenXrGetHeadPose() {
  	if (!g.running) {
  		return {};
-@@ -732,11 +1297,11 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+@@ -727,16 +1417,21 @@ VrControllerInput OpenXrGetController(int hand) {
+ 	return g.input[hand];
+ }
+ 
++void OpenXrSetControllerHaptics(float left_amplitude, float right_amplitude) {
++	g.haptic_target[0].store(std::clamp(left_amplitude, 0.0f, 1.0f), std::memory_order_relaxed);
++	g.haptic_target[1].store(std::clamp(right_amplitude, 0.0f, 1.0f), std::memory_order_relaxed);
++}
++
+ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+ 	if (!g.running) {
  		return;
  	}
  	std::lock_guard lock(g.mutex);
@@ -9115,7 +10081,7 @@ index bbfb9446..c5f8927f 100644
  	const auto vk_command = command.Handle();
  	Barrier(vk_command, slot.image.image, vk::ImageLayout::eUndefined,
  	        vk::ImageLayout::eTransferDstOptimal, 1, TRANSFER, TRANSFER_WRITE);
-@@ -747,16 +1312,183 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+@@ -747,16 +1442,183 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
  	blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
  	blit.dstOffsets[1]  = vk::Offset3D {static_cast<int32_t>(slot.image.extent.width),
  	                                    static_cast<int32_t>(slot.image.extent.height), 1};
@@ -9476,6 +10442,143 @@ index 00000000..9f53d405
 +		if (oldest < 0 || slots[i].sequence < slots[oldest].sequence) oldest = index;
 +	}
 +	return oldest;
++}
++
++} // namespace Libs::Vr
+diff --git a/src/graphics/presentation/stereoFrame.h b/src/graphics/presentation/stereoFrame.h
+new file mode 100644
+index 00000000..f28d6af9
+--- /dev/null
++++ b/src/graphics/presentation/stereoFrame.h
+@@ -0,0 +1,131 @@
++#pragma once
++
++#include "graphics/presentation/cameraTracking.h"
++
++#include <cstdint>
++#include <limits>
++#include <optional>
++
++namespace Libs::Vr {
++
++using CameraBlock = std::array<float, 144>;
++
++// Render inputs, not a displayed image. Ownership is by value so later game uploads
++// and tracking polls cannot change either eye while its commands are being recorded.
++struct StereoFrameMetadata {
++	uint64_t id = 0;
++	VrFramePose pose;
++	// OpenXR order: left, right, up, down. Kept with the rendered frame.
++	std::array<std::array<float, 4>, 2> fovs;
++	bool headset_projection = false;
++	bool flat_screen = false;
++};
++
++struct StereoFrame : StereoFrameMetadata {
++	std::array<CameraBlock, 2> cameras;
++};
++
++// GPU resolver thread only; the headset thread receives a value copy in its staging slot.
++inline std::optional<StereoFrameMetadata> active_stereo_frame;
++
++inline bool ValidStereoPose(const VrPose& pose) {
++	if (!pose.valid) return false;
++	float norm = 0;
++	for (float value: pose.orientation) {
++		if (!std::isfinite(value)) return false;
++		norm += value * value;
++	}
++	for (float value: pose.position)
++		if (!std::isfinite(value)) return false;
++	return std::abs(norm - 1.0f) < 0.0001f;
++}
++
++// Screen-space draws use the same normalized coordinates in both eyes. Choose
++// parallel eye axes and map those coordinates to a common plane, while enclosing
++// the runtime's original (possibly canted) fields of view on that plane.
++inline bool AlignScreenSpaceOverlays(VrFramePose& pose, float distance) {
++	if (!std::isfinite(distance) || distance <= 0) return false;
++	const float infinity = std::numeric_limits<float>::infinity();
++	float min_x = infinity, min_y = infinity, max_x = -infinity, max_y = -infinity;
++	for (size_t eye = 0; eye < 2; ++eye) {
++		const auto& p = pose.eyes[eye];
++		EyeProjection lens;
++		if (!ValidStereoPose(p) || !GetEyeProjection(pose.fovs[eye], lens)) return false;
++		const auto view = CameraEyeInverse(p);
++		const auto& [left, right, up, down] = pose.fovs[eye];
++		const float depth = distance + p.position[2];
++		if (depth <= 0) return false;
++		for (const float x: {std::tan(left), std::tan(right)}) {
++			for (const float y: {std::tan(down), std::tan(up)}) {
++				// The transpose of the view rotation takes an eye ray to head space.
++				const float forward = view[10] - view[8] * x - view[9] * y;
++				if (forward < 0.1f) return false;
++				const float plane_x = p.position[0] + depth * (view[0] * x + view[1] * y - view[2]) / forward;
++				const float plane_y = p.position[1] + depth * (view[4] * x + view[5] * y - view[6]) / forward;
++				min_x = std::min(min_x, plane_x);
++				max_x = std::max(max_x, plane_x);
++				min_y = std::min(min_y, plane_y);
++				max_y = std::max(max_y, plane_y);
++			}
++		}
++	}
++	auto fovs = pose.fovs;
++	for (size_t eye = 0; eye < 2; ++eye) {
++		const auto& p = pose.eyes[eye].position;
++		const float depth = distance + p[2];
++		fovs[eye] = {std::atan((min_x - p[0]) / depth), std::atan((max_x - p[0]) / depth),
++		             std::atan((max_y - p[1]) / depth), std::atan((min_y - p[1]) / depth)};
++		EyeProjection lens;
++		if (!GetEyeProjection(fovs[eye], lens)) return false;
++	}
++	for (auto& eye: pose.eyes) {
++		eye.orientation[0] = eye.orientation[1] = eye.orientation[2] = 0;
++		eye.orientation[3] = 1;
++	}
++	pose.fovs = fovs;
++	return true;
++}
++
++// The renderer must additionally isolate temporal images, view-dependent GPU writes,
++// and their previous camera inputs. This helper alone does not enable stereo replay.
++inline std::optional<StereoFrame> PrepareStereoFrame(uint64_t id, const CameraBlock& source,
++                                                     const CameraMatrix& head_transform,
++                                                     const VrFramePose& pose,
++                                                     const CameraMatrix& previous_head = {},
++                                                     const VrFramePose& previous_pose = {},
++                                                     bool headset_projection = false) {
++	if (!ValidStereoPose(pose.head) || !ValidStereoPose(pose.eyes[0]) ||
++	    !ValidStereoPose(pose.eyes[1])) return std::nullopt;
++	StereoFrame frame;
++	frame.id = id;
++	frame.pose = pose;
++	std::array<EyeProjection, 2> lenses;
++	frame.headset_projection = headset_projection &&
++	    std::abs(source[40]) < 0.01f && std::abs(source[41]) < 0.01f &&
++	    GetEyeProjection(pose.fovs[0], lenses[0]) && GetEyeProjection(pose.fovs[1], lenses[1]);
++	for (size_t eye = 0; eye < 2; ++eye) {
++		frame.cameras[eye] = source;
++		const auto transform = CameraMultiply(head_transform, CameraEyeInverse(pose.eyes[eye]));
++		if (frame.headset_projection) {
++			const auto previous_transform = ValidStereoPose(previous_pose.eyes[eye])
++			    ? CameraMultiply(previous_head, CameraEyeInverse(previous_pose.eyes[eye])) : transform;
++			EyeProjection previous_lens;
++			const auto* prior = GetEyeProjection(previous_pose.fovs[eye], previous_lens)
++			    ? &previous_lens : &lenses[eye];
++			if (!RotateCameraBlock(frame.cameras[eye], transform, &previous_transform,
++			                       &lenses[eye], prior)) return std::nullopt;
++			frame.fovs[eye] = pose.fovs[eye];
++			continue;
++		}
++		if (!RotateCameraBlock(frame.cameras[eye], transform)) return std::nullopt;
++		const auto& camera = frame.cameras[eye];
++		const float sx = camera[32], sy = camera[37], ox = camera[40], oy = camera[41];
++		if (!(sx > 0 && sy > 0) || std::abs(ox) >= 1 || std::abs(oy) >= 1)
++			return std::nullopt;
++		frame.fovs[eye] = {std::atan((-1 + ox) / sx), std::atan((1 + ox) / sx),
++		                   std::atan((1 + oy) / sy), std::atan((-1 + oy) / sy)};
++	}
++	return frame;
 +}
 +
 +} // namespace Libs::Vr
@@ -10074,7 +11177,7 @@ index 00000000..2508f96a
 +} // namespace Libs::Vr
 +#endif
 diff --git a/src/graphics/presentation/vrInput.h b/src/graphics/presentation/vrInput.h
-index f1b13f4d..e2a18156 100644
+index f1b13f4d..c298c5cf 100644
 --- a/src/graphics/presentation/vrInput.h
 +++ b/src/graphics/presentation/vrInput.h
 @@ -1,7 +1,13 @@
@@ -10110,7 +11213,7 @@ index f1b13f4d..e2a18156 100644
  // One headset controller. Sticks are -1..1 with +y up, the trigger and squeeze 0..1.
  struct VrControllerInput {
  	bool   connected = false;
-@@ -26,6 +44,8 @@ struct VrControllerInput {
+@@ -26,11 +44,17 @@ struct VrControllerInput {
  
  // Latest head pose; not valid, at the origin, while no headset session tracks the head.
  [[nodiscard]] VrPose OpenXrGetHeadPose();
@@ -10119,6 +11222,15 @@ index f1b13f4d..e2a18156 100644
  
  // Latest state of the left (0) or right (1) controller. While it is not connected the caller keeps
  // using the keyboard or gamepad.
+ [[nodiscard]] VrControllerInput OpenXrGetController(int hand);
+ 
++// Sets desired haptic vibration amplitude (0..1) for the left and right VR controllers.
++// Applied on the OpenXR headset thread while the session has focus.
++void OpenXrSetControllerHaptics(float left_amplitude, float right_amplitude);
++
+ } // namespace Libs::Vr
+ 
+ #endif // EMULATOR_SRC_GRAPHICS_PRESENTATION_VRINPUT_H_
 diff --git a/src/graphics/presentation/window/hostInput.cpp b/src/graphics/presentation/window/hostInput.cpp
 index 10ea3afc..67cdebea 100644
 --- a/src/graphics/presentation/window/hostInput.cpp
@@ -11075,10 +12187,27 @@ index 9302f3e3..25171eb7 100644
  		return true;
  	}
 diff --git a/src/libs/controller.cpp b/src/libs/controller.cpp
-index ad393f7e..57d6f099 100644
+index ad393f7e..6732019a 100644
 --- a/src/libs/controller.cpp
 +++ b/src/libs/controller.cpp
-@@ -130,6 +130,7 @@ public:
+@@ -13,6 +13,7 @@
+ #include "libs/errno.h"
+ #include "libs/libs.h"
+ #include "libs/padData.h"
++#include "libs/vrGamepadBridge.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -36,6 +37,8 @@ static_assert(PAD_HANDLE + Config::MAX_PLAYERS <= PAD_HANDLE_VR_LEFT);
+ constexpr uint32_t RUMBLE_DURATION_MS = 0xffff;
+ constexpr uint32_t RELEASE_FLUSH_MS   = 50;
+ 
++static std::atomic<uint64_t> g_last_vr_input_us {0};
++
+ struct PadControllerInformation {
+ 	float    touch_pixel_density;
+ 	uint16_t touch_resolution_x;
+@@ -130,6 +133,7 @@ public:
  	void SetMotionSensorState(bool enable);
  	void ResetOrientation();
  	void ToggleGyroEmulation(int id);
@@ -11086,7 +12215,7 @@ index ad393f7e..57d6f099 100644
  	void ResetInputState();
  	void GetConnectionInfo(bool* flag, int* count);
  	void SetVibration(uint8_t large_motor, uint8_t small_motor);
-@@ -154,13 +155,24 @@ private:
+@@ -154,13 +158,24 @@ private:
  	void AddState();
  	// Emulated tilt: the right stick drives pitch and roll instead of the stick axes.
  	void UpdateEmulatedTilt();
@@ -11115,7 +12244,7 @@ index ad393f7e..57d6f099 100644
  	bool             m_connected       = false;
  	int              m_connected_count = 0;
  	bool             m_motion_enabled  = true;
-@@ -286,14 +298,29 @@ float GetSettingScale(Setting setting) {
+@@ -286,14 +301,29 @@ float GetSettingScale(Setting setting) {
  }
  
  void GameController::CycleSetting(Setting setting) {
@@ -11153,7 +12282,7 @@ index ad393f7e..57d6f099 100644
  	}
  }
  
-@@ -307,7 +334,14 @@ float GameController::GetSettingScale(Setting setting) const {
+@@ -307,7 +337,14 @@ float GameController::GetSettingScale(Setting setting) const {
  	if (setting == Setting::VibrationIntensity) {
  		return INTENSITY[step] * (Config::GetControllerVibrationIntensity() / 100.0f);
  	}
@@ -11169,7 +12298,7 @@ index ad393f7e..57d6f099 100644
  }
  
  static uint8_t Scale(uint8_t value, float scale) {
-@@ -516,6 +550,17 @@ static bool HostInputOnly() {
+@@ -516,6 +553,17 @@ static bool HostInputOnly() {
  	return enabled;
  }
  
@@ -11187,7 +12316,7 @@ index ad393f7e..57d6f099 100644
  void GameController::SetDevices(int active_id) {
  	Common::LockGuard lock(m_mutex);
  	if (m_active_id == active_id) {
-@@ -524,13 +569,16 @@ void GameController::SetDevices(int active_id) {
+@@ -524,13 +572,16 @@ void GameController::SetDevices(int active_id) {
  	if (active_id != HOST_INPUT_CONTROLLER_ID && active_id != -1) {
  		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
  		    pad != nullptr) {
@@ -11209,7 +12338,7 @@ index ad393f7e..57d6f099 100644
  				}
  			}
  		}
-@@ -781,6 +829,15 @@ void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t t
+@@ -781,6 +832,15 @@ void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t t
  		m_gyro_time = time_us;
  	}
  	m_state.time = LibKernel::KernelGetProcessTime();
@@ -11225,7 +12354,7 @@ index ad393f7e..57d6f099 100644
  	AddState();
  }
  
-@@ -805,7 +862,13 @@ static Quat QuatMultiply(const Quat& a, const Quat& b) {
+@@ -805,7 +865,13 @@ static Quat QuatMultiply(const Quat& a, const Quat& b) {
  }
  
  void GameController::UpdateEmulatedTilt() {
@@ -11240,7 +12369,7 @@ index ad393f7e..57d6f099 100644
  	const auto      angle     = [](int value) {
          return std::clamp((value - 128) / 127.0f, -1.0f, 1.0f) * max_angle;
  	};
-@@ -842,18 +905,35 @@ void GameController::UpdateEmulatedTilt() {
+@@ -842,18 +908,35 @@ void GameController::UpdateEmulatedTilt() {
  
  void GameController::ToggleGyroEmulation(int id) {
  	Common::LockGuard lock(m_mutex);
@@ -11279,7 +12408,7 @@ index ad393f7e..57d6f099 100644
  	m_emulated_time  = 0;
  	m_state.time     = LibKernel::KernelGetProcessTime();
  	if (m_gyro_emulation) {
-@@ -906,7 +986,9 @@ static void StopHostPad(SDL_Gamepad* pad) {
+@@ -906,7 +989,9 @@ static void StopHostPad(SDL_Gamepad* pad) {
  		(void)SDL_SendGamepadEffect(pad, &effect, sizeof(effect));
  	}
  	(void)SDL_RumbleGamepad(pad, 0, 0, 0);
@@ -11290,7 +12419,7 @@ index ad393f7e..57d6f099 100644
  }
  
  // ASTROHYBRID_RUMBLE_SCALE=percent (default 100, 0..200): rumble strength for pads other than a
-@@ -933,92 +1015,130 @@ static uint16_t HostRumble(int id, uint8_t motor) {
+@@ -933,92 +1018,130 @@ static uint16_t HostRumble(int id, uint8_t motor) {
  }
  
  void GameController::SetVibration(uint8_t large_motor, uint8_t small_motor) {
@@ -11384,7 +12513,9 @@ index ad393f7e..57d6f099 100644
 +			b = (*color)[2];
 +		}
 +		active_id = m_active_id;
-+	}
+ 	}
+-	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
+-	    pad != nullptr) {
 +	if (active_id == HOST_INPUT_CONTROLLER_ID || active_id == -1) {
 +		return;
 +	}
@@ -11392,9 +12523,7 @@ index ad393f7e..57d6f099 100644
 +	// up to 500ms waiting for an ACK inside SDL_LockJoysticks() on third-party BT pads).
 +	if (IsSwitchGamepad(active_id)) {
 +		return;
- 	}
--	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
--	    pad != nullptr) {
++	}
 +	SDL_LockJoysticks();
 +	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
 +	    SupportsRgbLed(pad)) {
@@ -11473,7 +12602,7 @@ index ad393f7e..57d6f099 100644
  	}
  	return true;
  }
-@@ -1044,13 +1164,13 @@ void GameController::GetTriggerEffectState(int32_t* state) {
+@@ -1044,13 +1167,13 @@ void GameController::GetTriggerEffectState(int32_t* state) {
  	}
  }
  
@@ -11490,7 +12619,7 @@ index ad393f7e..57d6f099 100644
  	if ((param.trigger_mask & 0x01u) != 0) {
  		effect.enable_bits |= 0x08;
  		if (!trigger_effect_to_dualsense(param.command[0], effect.left_trigger, scale)) {
-@@ -1063,15 +1183,19 @@ bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
+@@ -1063,15 +1186,19 @@ bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
  			return false;
  		}
  	}
@@ -11516,7 +12645,7 @@ index ad393f7e..57d6f099 100644
  }
  
  void GameController::GetConnectionInfo(bool* flag, int* count) {
-@@ -1386,6 +1510,13 @@ void ToggleGyroEmulation(int id) {
+@@ -1386,6 +1513,13 @@ void ToggleGyroEmulation(int id) {
  	}
  }
  
@@ -11530,7 +12659,73 @@ index ad393f7e..57d6f099 100644
  void ResetInputState() {
  	for (const auto& player: g_players) {
  		if (player != nullptr) {
-@@ -1681,7 +1812,6 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
+@@ -1402,7 +1536,14 @@ bool IsPlayerConnected(int player) {
+ 	if (player < 0 || player >= Config::MAX_PLAYERS || g_players[player] == nullptr) {
+ 		return false;
+ 	}
+-	return g_players[player]->GetActiveControllerId() != -1;
++	if (g_players[player]->GetActiveControllerId() != -1) {
++		return true;
++	}
++	if (player == 0 && VrGamepad::Enabled() &&
++	    (Vr::OpenXrGetController(0).connected || Vr::OpenXrGetController(1).connected)) {
++		return true;
++	}
++	return false;
+ }
+ 
+ bool GameController::PadOpenArgsAreValid(int user_id, int type, int index) const {
+@@ -1594,6 +1735,11 @@ int KYTY_SYSV_ABI PadGetControllerInformation(int handle, PadControllerInformati
+ 	int  connected_count = 0;
+ 	bool connected       = false;
+ 	PlayerForHandle(handle)->GetConnectionInfo(&connected, &connected_count);
++	if (handle == PAD_HANDLE && VrGamepad::Enabled() &&
++	    (Vr::OpenXrGetController(0).connected || Vr::OpenXrGetController(1).connected)) {
++		connected       = true;
++		connected_count = std::max(connected_count, 1);
++	}
+ 
+ 	std::memset(info, 0, sizeof(*info));
+ 
+@@ -1642,6 +1788,16 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
+ 
+ 	pad_fill_data(data, state, connected, connected_count);
+ 
++	if (handle == PAD_HANDLE && VrGamepad::Enabled()) {
++		const auto vr_left  = Vr::OpenXrGetController(0);
++		const auto vr_right = Vr::OpenXrGetController(1);
++		const auto now_us   = LibKernel::KernelGetProcessTime();
++		const auto vr_res   = VrGamepad::MergeIntoPadData(data, vr_left, vr_right, now_us);
++		if (vr_res.active_input) {
++			g_last_vr_input_us.store(now_us, std::memory_order_relaxed);
++		}
++	}
++
+ 	return OK;
+ }
+ 
+@@ -1676,12 +1832,27 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
+ 		pad_fill_data(&data[i], states[i], connected, connected_count);
+ 	}
+ 
++	if (handle == PAD_HANDLE && VrGamepad::Enabled()) {
++		const auto vr_left  = Vr::OpenXrGetController(0);
++		const auto vr_right = Vr::OpenXrGetController(1);
++		if (vr_left.connected || vr_right.connected) {
++			const auto now_us = LibKernel::KernelGetProcessTime();
++			bool       active = false;
++			for (int i = 0; i < ret_num; i++) {
++				const auto vr_res = VrGamepad::MergeIntoPadData(&data[i], vr_left, vr_right, now_us);
++				active            = active || vr_res.active_input;
++			}
++			if (active) {
++				g_last_vr_input_us.store(now_us, std::memory_order_relaxed);
++			}
++		}
++	}
++
+ 	return ret_num;
+ }
  
  int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
  	PRINT_NAME();
@@ -11538,7 +12733,39 @@ index ad393f7e..57d6f099 100644
  
  	if (const auto error = PadCheckHandle(handle); error != OK) {
  		return error;
-@@ -1711,7 +1841,6 @@ int KYTY_SYSV_ABI PadResetLightBar(int handle) {
+@@ -1696,6 +1867,31 @@ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
+ 
+ 	PlayerForHandle(handle)->SetVibration(param->large_motor, param->small_motor);
+ 
++	if (handle == PAD_HANDLE && VrGamepad::Enabled()) {
++		const auto vr_left  = Vr::OpenXrGetController(0);
++		const auto vr_right = Vr::OpenXrGetController(1);
++		if (vr_left.connected || vr_right.connected) {
++			bool phys_connected = false;
++			int  phys_count     = 0;
++			PlayerForHandle(handle)->GetConnectionInfo(&phys_connected, &phys_count);
++			const uint64_t now_us  = LibKernel::KernelGetProcessTime();
++			const uint64_t last_vr = g_last_vr_input_us.load(std::memory_order_relaxed);
++			const bool     vr_used = !phys_connected ||
++			                     (last_vr != 0 && now_us >= last_vr &&
++			                      (now_us - last_vr) < 15'000'000ULL);
++			if (vr_used) {
++				float left_amp = 0.0f, right_amp = 0.0f;
++				VrGamepad::ComputeHapticAmplitudes(
++				    param->large_motor, param->small_motor,
++				    PlayerForHandle(handle)->GetSettingScale(Setting::VibrationIntensity),
++				    left_amp, right_amp);
++				Vr::OpenXrSetControllerHaptics(left_amp, right_amp);
++			} else {
++				Vr::OpenXrSetControllerHaptics(0.0f, 0.0f);
++			}
++		}
++	}
++
+ 	return OK;
+ }
+ 
+@@ -1711,7 +1907,6 @@ int KYTY_SYSV_ABI PadResetLightBar(int handle) {
  
  int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
  	PRINT_NAME();
@@ -11546,7 +12773,7 @@ index ad393f7e..57d6f099 100644
  
  	if (const auto error = PadCheckHandle(handle); error != OK) {
  		return error;
-@@ -1727,7 +1856,6 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
+@@ -1727,7 +1922,6 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
  
  int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const PadTriggerEffectParam* param) {
  	PRINT_NAME();
@@ -11610,6 +12837,235 @@ index 21d01299..a2e6a36a 100644
  		return static_cast<uint64_t>(frames) * 1000000 / stream->freq;
  	}
  	const bool wireless = IsWireless(controller);
+diff --git a/src/libs/vrGamepadBridge.h b/src/libs/vrGamepadBridge.h
+new file mode 100644
+index 00000000..b991e2c9
+--- /dev/null
++++ b/src/libs/vrGamepadBridge.h
+@@ -0,0 +1,223 @@
++#ifndef EMULATOR_SRC_LIBS_VRGAMEPADBRIDGE_H_
++#define EMULATOR_SRC_LIBS_VRGAMEPADBRIDGE_H_
++
++#include "graphics/presentation/vrInput.h"
++#include "libs/controller.h"
++#include "libs/padData.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdlib>
++
++namespace Libs::Controller::VrGamepad {
++
++inline constexpr float STICK_DEADZONE    = 0.12f;
++inline constexpr float TRIGGER_DEADZONE  = 0.05f;
++inline constexpr float SQUEEZE_THRESHOLD = 0.50f;
++inline constexpr float DPAD_THRESHOLD    = 0.55f;
++
++inline bool Enabled() {
++	static const bool enabled = [] {
++		if (const char* v = std::getenv("KYTY_VR_CONTROLLERS"); v != nullptr && v[0] == '0') {
++			return false;
++		}
++		if (const char* v = std::getenv("ASTROHYBRID_VR_CONTROLLERS"); v != nullptr && v[0] == '0') {
++			return false;
++		}
++		return true;
++	}();
++	return enabled;
++}
++
++inline uint8_t FloatToTriggerByte(float value) {
++	if (value <= TRIGGER_DEADZONE) {
++		return 0;
++	}
++	const float scaled = std::clamp((value - TRIGGER_DEADZONE) / (1.0f - TRIGGER_DEADZONE), 0.0f, 1.0f);
++	return static_cast<uint8_t>(scaled * 255.0f + 0.5f);
++}
++
++inline void ApplyRadialDeadzone(float raw_x, float raw_y, uint8_t& out_x, uint8_t& out_y) {
++	const float mag = std::sqrt(raw_x * raw_x + raw_y * raw_y);
++	if (mag <= STICK_DEADZONE || !std::isfinite(mag)) {
++		out_x = 128;
++		out_y = 128;
++		return;
++	}
++	const float scaled_mag = std::clamp((mag - STICK_DEADZONE) / (1.0f - STICK_DEADZONE), 0.0f, 1.0f);
++	const float nx         = (raw_x / mag) * scaled_mag;
++	const float ny         = (raw_y / mag) * scaled_mag;
++	out_x = static_cast<uint8_t>(std::clamp(nx * 127.5f + 128.0f, 0.0f, 255.0f) + 0.5f);
++	out_y = static_cast<uint8_t>(std::clamp(128.0f - ny * 127.5f, 0.0f, 255.0f) + 0.5f);
++}
++
++inline int StickDeflectionSq(uint8_t x, uint8_t y) {
++	const int dx = static_cast<int>(x) - 128;
++	const int dy = static_cast<int>(y) - 128;
++	return dx * dx + dy * dy;
++}
++
++inline void MergeStick(uint8_t& pad_x, uint8_t& pad_y, uint8_t vr_x, uint8_t vr_y) {
++	if (StickDeflectionSq(vr_x, vr_y) > StickDeflectionSq(pad_x, pad_y)) {
++		pad_x = vr_x;
++		pad_y = vr_y;
++	}
++}
++
++struct MergeResult {
++	bool any_connected = false;
++	bool active_input  = false;
++};
++
++// Merges OpenXR left/right VR controller inputs into a PS5 DualSense PadData struct.
++// Seamless coexistence: when a physical gamepad is also connected, buttons are ORed,
++// triggers take the maximum, and sticks pick whichever input has the larger deflection.
++// When no physical gamepad is connected, VR controllers provide a connected virtual pad.
++inline MergeResult MergeIntoPadData(PadData* data, const Vr::VrControllerInput& left,
++                                    const Vr::VrControllerInput& right, uint64_t timestamp_us) {
++	MergeResult result {};
++	if (data == nullptr || (!left.connected && !right.connected)) {
++		return result;
++	}
++	result.any_connected = true;
++
++	if (!data->connected) {
++		data->buttons           = 0;
++		data->left_stick_x      = 128;
++		data->left_stick_y      = 128;
++		data->right_stick_x     = 128;
++		data->right_stick_y     = 128;
++		data->analog_buttons_l2 = 0;
++		data->analog_buttons_r2 = 0;
++		if (data->orientation_x == 0.0f && data->orientation_y == 0.0f &&
++		    data->orientation_z == 0.0f && data->orientation_w == 0.0f) {
++			data->orientation_w = 1.0f;
++		}
++	}
++
++	const bool l_conn = left.connected;
++	const bool r_conn = right.connected;
++
++	const bool l_squeeze = l_conn && left.squeeze > SQUEEZE_THRESHOLD;
++	const bool r_squeeze = r_conn && right.squeeze > SQUEEZE_THRESHOLD;
++	const bool l_click   = l_conn && left.stick_click;
++	const bool r_click   = r_conn && right.stick_click;
++	const bool l_menu    = l_conn && left.menu;
++
++	// Chords:
++	// 1. Touchpad Click: Left Grip + Left Menu, OR L3 + R3 (both thumbstick clicks).
++	const bool touchpad_chord = (l_squeeze && l_menu) || (l_click && r_click);
++	// 2. D-Pad Shift: Hold L3 + tilt Left Stick past DPAD_THRESHOLD (without R3).
++	const bool dpad_chord =
++	    !touchpad_chord && l_click &&
++	    (std::fabs(left.stick_x) > DPAD_THRESHOLD || std::fabs(left.stick_y) > DPAD_THRESHOLD);
++
++	uint32_t vr_buttons = 0;
++	if (touchpad_chord) {
++		vr_buttons |= PAD_BUTTON_TOUCH_PAD;
++		if (data->touch_data.touch_num == 0) {
++			data->touch_data.touch_num  = 1;
++			data->touch_data.touch[0].x = 960;
++			data->touch_data.touch[0].y = 471;
++			data->touch_data.touch[0].id = 1;
++		}
++	}
++	if (dpad_chord) {
++		if (left.stick_y > DPAD_THRESHOLD) {
++			vr_buttons |= PAD_BUTTON_UP;
++		}
++		if (left.stick_y < -DPAD_THRESHOLD) {
++			vr_buttons |= PAD_BUTTON_DOWN;
++		}
++		if (left.stick_x < -DPAD_THRESHOLD) {
++			vr_buttons |= PAD_BUTTON_LEFT;
++		}
++		if (left.stick_x > DPAD_THRESHOLD) {
++			vr_buttons |= PAD_BUTTON_RIGHT;
++		}
++	}
++
++	// Left hand face & shoulder buttons
++	if (l_conn) {
++		if (left.primary) {
++			vr_buttons |= PAD_BUTTON_SQUARE; // X -> Square (Punch / Spin)
++		}
++		if (left.secondary) {
++			vr_buttons |= PAD_BUTTON_TRIANGLE; // Y -> Triangle
++		}
++		if (l_squeeze && !(touchpad_chord && l_menu)) {
++			vr_buttons |= PAD_BUTTON_L1;
++		}
++		if (l_menu && !touchpad_chord) {
++			vr_buttons |= PAD_BUTTON_OPTIONS;
++		}
++		if (l_click && !touchpad_chord && !dpad_chord) {
++			vr_buttons |= PAD_BUTTON_L3;
++		}
++	}
++
++	// Right hand face & shoulder buttons
++	if (r_conn) {
++		if (right.primary) {
++			vr_buttons |= PAD_BUTTON_CROSS; // A -> Cross (Jump / Hover)
++		}
++		if (right.secondary) {
++			vr_buttons |= PAD_BUTTON_CIRCLE; // B -> Circle (Back / Cancel)
++		}
++		if (r_squeeze) {
++			vr_buttons |= PAD_BUTTON_R1;
++		}
++		if (r_click && !touchpad_chord) {
++			vr_buttons |= PAD_BUTTON_R3;
++		}
++	}
++
++	// Analog triggers (L2 / R2) + digital L2 / R2 bits
++	const uint8_t vr_l2 = l_conn ? FloatToTriggerByte(left.trigger) : 0;
++	const uint8_t vr_r2 = r_conn ? FloatToTriggerByte(right.trigger) : 0;
++	if (vr_l2 > 0) {
++		vr_buttons |= PAD_BUTTON_L2;
++	}
++	if (vr_r2 > 0) {
++		vr_buttons |= PAD_BUTTON_R2;
++	}
++	data->analog_buttons_l2 = std::max(data->analog_buttons_l2, vr_l2);
++	data->analog_buttons_r2 = std::max(data->analog_buttons_r2, vr_r2);
++
++	// Thumbsticks (with radial deadzone; suppress left stick movement while D-Pad shift is active)
++	uint8_t vr_lx = 128, vr_ly = 128;
++	uint8_t vr_rx = 128, vr_ry = 128;
++	if (l_conn && !dpad_chord) {
++		ApplyRadialDeadzone(left.stick_x, left.stick_y, vr_lx, vr_ly);
++		MergeStick(data->left_stick_x, data->left_stick_y, vr_lx, vr_ly);
++	}
++	if (r_conn) {
++		ApplyRadialDeadzone(right.stick_x, right.stick_y, vr_rx, vr_ry);
++		MergeStick(data->right_stick_x, data->right_stick_y, vr_rx, vr_ry);
++	}
++
++	data->buttons |= vr_buttons;
++	data->connected       = true;
++	data->connected_count = std::max<uint8_t>(data->connected_count, 1);
++	if (data->timestamp == 0 && timestamp_us != 0) {
++		data->timestamp = timestamp_us;
++	}
++
++	result.active_input = vr_buttons != 0 || vr_l2 > 0 || vr_r2 > 0 ||
++	                      vr_lx != 128 || vr_ly != 128 || vr_rx != 128 || vr_ry != 128;
++	return result;
++}
++
++inline void ComputeHapticAmplitudes(uint8_t large_motor, uint8_t small_motor, float intensity_scale,
++                                    float& out_left, float& out_right) {
++	const float scale = std::clamp(intensity_scale, 0.0f, 1.0f);
++	const float large = (static_cast<float>(large_motor) / 255.0f) * scale;
++	const float small = (static_cast<float>(small_motor) / 255.0f) * scale;
++	out_left          = std::clamp(std::max(large, small * 0.65f), 0.0f, 1.0f);
++	out_right         = std::clamp(std::max(small, large * 0.65f), 0.0f, 1.0f);
++}
++
++} // namespace Libs::Controller::VrGamepad
++
++#endif // EMULATOR_SRC_LIBS_VRGAMEPADBRIDGE_H_
 diff --git a/tests/CpRecorderTests.cpp b/tests/CpRecorderTests.cpp
 index b23b0c73..42355f45 100644
 --- a/tests/CpRecorderTests.cpp
@@ -11648,6 +13104,71 @@ index b23b0c73..42355f45 100644
  	TestVerifyDetectsCorruption();
  	TestSites();
  	if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
+diff --git a/tests/FrameStepTests.cpp b/tests/FrameStepTests.cpp
+new file mode 100644
+index 00000000..6572f2d3
+--- /dev/null
++++ b/tests/FrameStepTests.cpp
+@@ -0,0 +1,59 @@
++#include "common/frameStep.h"
++
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <limits>
++
++namespace {
++constexpr double nominal = 1.0 / 60.0;
++void Check(bool condition, const char* message) {
++	if (!condition) { std::fprintf(stderr,"FrameStepTests: %s\n",message); std::abort(); }
++}
++bool Near(double a,double b) { return std::abs(a-b)<1e-7; }
++}
++int main() {
++	for (const uint64_t period: {20'000'000ull,33'333'333ull,66'666'667ull,76'923'077ull,100'000'000ull}) {
++		Common::FrameStepClock clock;
++		uint64_t now=1'000'000'000;
++		clock.Advance(now,nominal,true);
++		double simulated=0;
++		for (int frame=0;frame<100;++frame) simulated+=clock.Advance(now+=period,nominal,true);
++		Check(Near(simulated,double(period)*1e-9*100),"simulation does not follow elapsed wall time");
++	}
++	{
++		Common::FrameStepClock jitter;
++		uint64_t tick=1'000'000'000;
++		jitter.Advance(tick,nominal,true);
++		double sum=0;
++		for(int i=0;i<1000;++i) {
++			sum+=jitter.Advance(tick+=15'000'000,nominal,true);
++			sum+=jitter.Advance(tick+=18'333'334,nominal,true);
++		}
++		Check(Near(sum,33.333334),"alternating short/long frames accumulated clock drift");
++	}
++	Common::FrameStepClock clock;
++	uint64_t now=1'000'000'000;
++	Check(Near(clock.Advance(now,nominal,true),nominal),"first sample advanced time unexpectedly");
++	now+=8'333'333;
++	Check(Near(clock.Advance(now,nominal,true),0.008333333),"fast frames accumulated excess simulation time");
++	now+=200'000'000;
++	Check(Near(clock.Advance(now,nominal,true),0.1),"long physics step exceeded its safety bound");
++	now+=1'000'000'000;
++	Check(Near(clock.Advance(now,nominal,true),nominal),"pause/loading stall caused a catch-up jump");
++	now+=33'333'333;
++	Check(Near(clock.Advance(now,nominal,true),1.0/30),"pause recovery retained old elapsed time");
++	now+=66'666'667;
++	Check(Near(clock.Advance(now,nominal,false),nominal),"probe mode altered game time");
++	now+=33'333'333;
++	Check(Near(clock.Advance(now,nominal,true),1.0/30),"mode switch accumulated disabled time");
++	now+=80'000'000;
++	Check(Near(clock.Advance(now,nominal,true),0.08),"slow rendering interval was not preserved");
++	now+=25'000'000;
++	Check(Near(clock.Advance(now,nominal,true),0.025),"improved rendering retained a previous slow interval");
++	Check(Near(clock.Advance(now-1,nominal,true),nominal),"backwards clock advanced time");
++	now+=33'333'333;
++	Check(Near(clock.Advance(now,std::numeric_limits<double>::quiet_NaN(),false),nominal),
++	      "invalid nominal interval escaped validation");
++	std::puts("FrameStepTests: elapsed-time integration, bounds, discontinuities and mode transitions passed");
++}
 diff --git a/tests/ResourceTrackingTests.cpp b/tests/ResourceTrackingTests.cpp
 index d6f14b46..1d45cf08 100644
 --- a/tests/ResourceTrackingTests.cpp

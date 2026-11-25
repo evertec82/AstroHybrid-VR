@@ -12,19 +12,19 @@ Both eyes render from the **same game frame**. Features include head tracking, h
 - A PC VR headset and working OpenXR runtime. SteamVR has been tested. Connect the headset and keep the PC VR session awake before launching.
 - Your own decrypted **PPSA21567, version 01.019.000** Astro Bot dump. The installer recognizes both AMD and Intel conversions from AstroHybrid 1.2.1, as well as the original supported conversion. It verifies the full executable before and after patching.
 - [AstroHybrid 1.2.1](https://github.com/imnotsharingmyname/pcportastrobot/releases/tag/v1.2.1), installed and working in desktop mode.
-- A gamepad for game controls. Head tracking does not turn this game into a motion-controller game.
+- A gamepad or PC VR controllers (Oculus/Meta Touch, Valve Index, WMR, HTC Vive, or generic OpenXR controllers) with haptic feedback. Gamepad and VR controllers coexist seamlessly.
 - NVIDIA optical-flow frame generation requires a compatible NVIDIA GPU and driver. This mod was developed on an RTX 5090 with 32 GB VRAM; comparable performance on other GPUs has not been established. Start at the lower presets. The 5184 and 6000 presets can consume substantial VRAM.
 
 ## Upgrading an existing installation
 
-Close the game, extract the v0.1.5 Windows ZIP into the same AstroHybrid installation, and run **Install VR.bat** again. Your saved launcher preferences carry forward. The installer creates a VR-specific layout for tutorial videos, holoboard instructions, construction prompts, coin counters and level-name banners using your installed assets.
+Close the game, extract the v0.1.6 Windows ZIP into the same AstroHybrid installation, and run **Install VR.bat** again. Your saved launcher preferences carry forward. The installer creates a VR-specific layout for tutorial videos, holoboard instructions, construction prompts, coin counters and level-name banners using your installed assets.
 
 ## First-time installation
 
 1. Download and extract the **AstroHybrid 1.2.1** ZIP from the link above. For example, extract it to `D:\Games\AstroHybrid`.
 2. Open its **AstroHybrid.exe** and complete setup. Select your own decrypted game dump folder: the folder containing `eboot.bin`, `sce_module`, and `sce_sys`. **Keep the game files in that dump folder. Do not put a PKG or a game archive into the VR mod folder.** AstroHybrid reads that folder and creates the Windows executable and loader files under `Build\RunHybrid`.
 3. Verify that the game starts in desktop mode, then close it.
-4. Download **AstroHybrid-VR-v0.1.5-Windows.zip** from this repository's [releases](https://github.com/evertec82/AstroHybrid-VR/releases). Extract its contents **directly into the same AstroHybrid folder**, alongside `AstroHybrid.exe`. After extraction, `Install VR.bat` and `Play AstroHybrid VR - Launcher.bat` should be beside `AstroHybrid.exe`.
+4. Download **AstroHybrid-VR-v0.1.6-Windows.zip** from this repository's [releases](https://github.com/evertec82/AstroHybrid-VR/releases). Extract its contents **directly into the same AstroHybrid folder**, alongside `AstroHybrid.exe`. After extraction, `Install VR.bat` and `Play AstroHybrid VR - Launcher.bat` should be beside `AstroHybrid.exe`.
 5. Run **Install VR.bat**. It verifies the mod files and exact game build, creates both VR game variants from your converted executable, copies the six loader sidecars, installs the VR renderer, and prepares the local OFXR layer. The original game executable remains unchanged. The previous renderer and video-out shim are copied to a timestamped `VR-backup-*` folder.
 6. Connect your headset through your usual PC VR software. Make sure the intended OpenXR runtime is active and the headset is awake.
 7. Open **Play AstroHybrid VR - Launcher.bat**, choose settings, and press **Start VR**.

@@ -1,1011 +1,1011 @@
 {
-  "version": "0.1.5",
-  "base_runtime": "AstroHybrid 1.2.1",
-  "game": {
-    "title_id": "PPSA21567",
-    "version": "01.019.000",
-    "base_name": "AstroBot-NonRT-SoftAssert",
-    "source_sha256": "5f52defd58fbd476091a0ea02e07835fdc32ce982d7c5176f26bbdf461141949",
-    "target_name": "AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard",
-    "target_sha256": "15867b84b0851b16c66f1a608a5fd55940b1ca07297de74ab57f9186c6f7988c",
-    "conversions": [
-      {
-        "variant": "AstroHybrid 1.2.1 AMD",
-        "source_sha256": "367854fe30f577621b6a159dcc8c095ebc7d872247cbc661b9c3928f217f404c",
-        "target_sha256": "fa2f8d212ac04a48a04372553e0c2b8fcd56b9b195569d9022426e3f5b779907",
-        "dlss_sha256": "2aab2abdfeaebe5f8ae272769d75185d67b521076e767af77b391c2798aab9bc"
-      },
-      {
-        "variant": "AstroHybrid 1.2.1 Intel",
-        "source_sha256": "0b3633a1e742dd3ac00623912766c57c7da5e94e55dd4d91d1ec511d86bd60af",
-        "target_sha256": "f0d6c014fa20b069cbdf4aeae16d771e3400e1ca055c534cfee686a123817c9a",
-        "dlss_sha256": "ea3885287bb41e820649d11da4a31d53a65131f5e749a113e217c9a03b6e0719"
-      }
-    ],
-    "patches": [
-      {
-        "offset": 121592501,
-        "before": "4489730c780db8040000004183fe057304eb0531c089430c",
-        "after": "b80400000089430c90909090909090909090909090909090"
-      },
-      {
-        "offset": 120902035,
-        "before": "4180bd75d501000074334180bde8d601000075290fb605b2cdae0784c00f8467b30000488b3dabcdae07418bb570d50100e8478a0a0041898570d50100",
-        "after": "4183bd70d5010004770b41c78570d5010004000000eb269090909090909090909090909090909090909090909090909090909090909090909090909090"
-      },
-      {
-        "offset": 2843277,
-        "before": "448ba0bc933000",
-        "after": "41bc0400000090"
-      },
-      {
-        "offset": 13036521,
-        "before": "448bb8bc933000",
-        "after": "41bf0400000090"
-      },
-      {
-        "offset": 13054357,
-        "before": "448bb8bc933000",
-        "after": "41bf0400000090"
-      },
-      {
-        "offset": 13052549,
-        "before": "74108b80b0933000",
-        "after": "9090b80400000090"
-      },
-      {
-        "offset": 2820113,
-        "before": "48b90300000003000000",
-        "after": "48b90400000004000000"
-      },
-      {
-        "offset": 2820251,
-        "before": "48b90300000003000000",
-        "after": "48b90400000004000000"
-      },
-      {
-        "offset": 2854396,
-        "before": "48b90300000003000000",
-        "after": "48b90400000004000000"
-      },
-      {
-        "offset": 120948080,
-        "before": "48b90300000003000000",
-        "after": "48b90400000004000000"
-      },
-      {
-        "offset": 122223910,
-        "before": "48b90300000003000000",
-        "after": "48b90400000004000000"
-      },
-      {
-        "offset": 8902987,
-        "before": "0f823a010000",
-        "after": "0f82b0daffff"
-      },
-      {
-        "offset": 8893441,
-        "before": "cccccccccccccccccccccccccccc",
-        "after": "4d85ff0f8447250000e97c260000"
-      },
-      {
-        "offset": 11991093,
-        "before": "c5f8288da0f9ffffc785c0fbffff01000000c5f8118d40faffffc5f8118d60faffffc5f8118d80faffffc5f8118d50faffffc5f8118d70faffffc5f8299570f9ffffc5f8118d90faffffeb236666666666662e0f1f840000000000",
-        "after": "c5f8104e40c5f0c24e5003c5f850c1a8070f852f030000c5f8288da0f9ffffc785c0fbffff01000000488d8540faffffc5f81108c5f8114810c5f8114820c5f8114830c5f8114840c5f8114850c5f8299570f9ffffeb1890909090"
-      }
-    ],
-    "dlss_target_name": "AstroBot-NonRT-SoftAssert-DLSS-PhysicsGuard",
-    "dlss_patch_offsets": [
-      8902987,
-      8893441,
-      11991093
-    ],
-    "dlss_sha256": "a2dec4213b4f6ce5799191a11502edd23956df42b7baf74084b9e2ead64b8fe7"
-  },
-  "payload": [
-    {
-      "path": "AstroHybrid VR Launcher.ps1",
-      "sha256": "f6a831d11283f447a30cb1c6dbfec07daf2c24672df166bf53bd6013e60ac2d6"
-    },
-    {
-      "path": "BUILDING.md",
-      "sha256": "f65172e223acdcb869fd090cab33244a87171c8374e0de842c0172f6d9c8a4ca"
-    },
-    {
-      "path": "Build/FrameGeneration/BUILD_PROVENANCE.json",
-      "sha256": "b62c0eb88d2fb198c6a1b1d92cc90cb7cee6bf21bf96a056d507980e56990500"
-    },
-    {
-      "path": "Build/FrameGeneration/CHANGELOG.md",
-      "sha256": "716c1a99570faf05c49f0da9c3478ae1e48e458e7a5817c817466c19f18b941f"
-    },
-    {
-      "path": "Build/FrameGeneration/LEGGIMI-RADEON.txt",
-      "sha256": "18628bed14165ffba8a3534cc26fbf32fc4c2b6f19bd33a519dfb5e6dae4eb1e"
-    },
-    {
-      "path": "Build/FrameGeneration/LICENSE",
-      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
-    },
-    {
-      "path": "Build/FrameGeneration/OFXRBridgeTray.exe",
-      "sha256": "e3128ff39c913ffc34c32c1a42b981e892a87b14a5282ff0f3453828de842e36"
-    },
-    {
-      "path": "Build/FrameGeneration/Profiles/Profiles/AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard.exe.ini",
-      "sha256": "ec1dd31b6b4cfa0adf318d1280bde674e6ff860178e6826dc8f91d0052536e11"
-    },
-    {
-      "path": "Build/FrameGeneration/Profiles/ofxr-bridge.ini",
-      "sha256": "ec1dd31b6b4cfa0adf318d1280bde674e6ff860178e6826dc8f91d0052536e11"
-    },
-    {
-      "path": "Build/FrameGeneration/README.md",
-      "sha256": "8eac542affeff7eefb172f73b2d7bf4cdd2b602d866d5986effdba19bc975a25"
-    },
-    {
-      "path": "Build/FrameGeneration/SHA256SUMS.txt",
-      "sha256": "3a37bb000a7c2da68cec33ac0253f8e67fd109ee0e596b08a88d16f0ffdae01c"
-    },
-    {
-      "path": "Build/FrameGeneration/THIRD_PARTY.md",
-      "sha256": "bb7db13dc4e132e9e1df1e8ae12c20547c063f816363aa715778ad843ffd5302"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/BUILDING_RIFE.md",
-      "sha256": "94506add1866f1d23c37e05b8ee6d6070eed0e6cb989790c9ce218a6398420ed"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/OSR_HISTORY.md",
-      "sha256": "347cd9a3c9c7b938ec0448f1a8d75b7b9ebf02743c6f86bc4095acf023b0ddc9"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/RDR2_EDGE_CAMERA_PHASE_TRIAL.md",
-      "sha256": "efa5a0ce367233be02e5a1cba78ca203a3e41da49fb5fe4cd4edd752a3dda04e"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/RDR2_MOTION_TIMING_TRIAL.md",
-      "sha256": "720ceb78fce1783378e9d96aa3d3788ffb72f34d26418a368378fec1fa22cf3d"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/RIFE.md",
-      "sha256": "6a0040e9af4c0c468f329ffdaa1ae7753fa79407995afb647efdf5518677a0df"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/RIFE_VULKAN.md",
-      "sha256": "ddb96a949d500ad72be9eb4a51e833886e2990d317b69572eedffda6152d7b83"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/STATUS_JSON.md",
-      "sha256": "dc962688f1031959c773dc2dac733f1c24dbb987f64b459c53450c22ec72b149"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/TROUBLESHOOTING.md",
-      "sha256": "6e78af2a43ecb154993bbc2251deb8a6119ea92d0d4f603e7dd3fa99bb3b6eda"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V849_NR_CAPTURE.md",
-      "sha256": "c0e00a379882cf11c3cc11b3088b171875551a7d3fe3676ec479cbbb6fb245da"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V850_MSFS_NR.md",
-      "sha256": "0ab66cc21e0806707953ca4febf0ce6c8ada554f05ec6d9d5f1596a668237427"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V851_NR_STARTUP.md",
-      "sha256": "e329b179ff3b07cd29d530b7e960ea0b68789b4d9cc28320268d77a5e520ed60"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V852_NR_COLOUR.md",
-      "sha256": "8af9df0254f504745f4da85426890c975af8c939fb2af509f131d7511f2b58cc"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V862_RIFE_TIMEOUT.md",
-      "sha256": "c2f20fbcac8ecf3de40ca8370caefc023d84feda093af257b26f0a373f7b0825"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V863_RIFE_PRECOMPILE.md",
-      "sha256": "adcdb7bf59b191f26e9caf41c0db0f67112d0867ad751f7440f71cf2bda49605"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V864_RIFE_OVERLAY_UPDATE.md",
-      "sha256": "ee7ace735ce296a487706fa5505b1d9954e4278b80df2ea6a364dcee800891aa"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V865_RIFE_PIPELINE.md",
-      "sha256": "6e6385b2726d5cd91903cf5d21742d7e2422be674e590568e3f0f83ec70a1396"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V866_RIFE_OUTPUT_BANKS.md",
-      "sha256": "b8581038e5a553350e1cabe898104033ac146a7cb09892c2f1b21223c77b8e8a"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V867_RIFE_INPUT_TIMING.md",
-      "sha256": "03c40ffab3f65212e8dfe9541b0be5a0adcdf1790beb0ed6c06cf0625756e9b1"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V868_RIFE_FRACTION_BATCH.md",
-      "sha256": "ace337350a7fb52a93fdc5e5365d22e55b3c0f3079703782e33b1a289bb693de"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V886_D11_FG_CAPTURE.md",
-      "sha256": "90de51e806eeb9a3b50cc89881f2f9844006113a61190bf1452bc18c99a8c87f"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V890_OSR_VISIBLE_WARP.md",
-      "sha256": "0d5f21fc216a1cf45fe24384d268e92adef8f03b15fc6f6f59dc2ed9f0281231"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V891_OSR_DISOCCLUSION_DEPTH.md",
-      "sha256": "f76210683925343a1c4a4ea323e4a035fef61a8d08acc6e06f4cf9a3ac52e4a2"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V892_BENCHMARK_MEMORY.md",
-      "sha256": "338363900568ffe958a2d322319f34af5e1a502eb3050b125cfa9a7481a7ce09"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V893_UI_AND_INVENTORY.md",
-      "sha256": "721947fb876d3df483a72ba99859fba22a94534a2e1395a00506c9bd9c262827"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V894_UEVR_PANEL_LIFETIME.md",
-      "sha256": "e1bd7b46f077fb25eca7effc9ee3c23b80909fd4f954969ee7af0ce3fe71b04b"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V895_UEVR_AUXILIARY_BUDGET.md",
-      "sha256": "ea136beaff76ce4920fde2212fbce2651ead93fb62267c9c91ed33884b92a076"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V896_SHARED_UI_ATLAS.md",
-      "sha256": "efd38d9ee8dd42d69ae2543ee032509947c4805bf5680b8757fde0a51d1717c2"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V897_AUTOMATIC_UI_BUDGET.md",
-      "sha256": "2a25b35610ac52d2e9158a5e15bfc4deb96596a054a71f9faa6e2853ab8d6881"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V898_BENCHMARK_RECONFIGURE.md",
-      "sha256": "09b41da9b496fcafbf2cea5ae5983bf782f40884c104730f9b79ef597c86eb26"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V899_RIFE_READINESS_RECOVERY.md",
-      "sha256": "20e62951c2974b97956673496fd72b617f4c4682b3fcf9c927d35bf8a93f1d35"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V900_CPU_METER.md",
-      "sha256": "220581e942894f36bf0f1afe4c1da8fed6a7db0bb792d298ad265f93be7499b2"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V901_PROJECTION_CONTINUITY.md",
-      "sha256": "a3f8c14fde1f61b4736ab18a4bbe5be4cda39d84cfd252967866237178585094"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V902_OSR_PREVIOUS_BASE.md",
-      "sha256": "555c6efeec5c6957f61ccdead9af899bbdd51616993d7e9f4de39c690fa5c3f8"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V903_OSR_V889_ONLY.md",
-      "sha256": "718785f8ab716773a425a285a850eeb1a15d475adbb7ddacf0e5ade6df5cbf02"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V904_OSR_CURRENT_MOTION.md",
-      "sha256": "532f850b94f0717c4fe2da6e212636c7e18b0d000ed25335dd158b5c9f2d241b"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V905_OSR_INTERLEAVED_GATE.md",
-      "sha256": "05221173435256c262dbb32e0fcd85a73daf16242cabda06df07b50e550b465c"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V906_OSR_CURRENT_SCREEN_MOTION.md",
-      "sha256": "c2aee4f6fa56048fb3e961bbb05b1d74ef13fe39c08de26844dc63ac435c15c3"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V907_OSR_TRUSTED_EDGE_MOTION.md",
-      "sha256": "5d680a424381684afc6fe614e7b7fb5e35e30b7e871c058c26a3aade696143f2"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V908_LUKE_RIFE_ASYNC.md",
-      "sha256": "165fca73ddfc3ad4ad752f4243ecbda3bd9aca5f0d28397cec9679419f69767f"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V909_GTA_LUKE_LAYOUT.md",
-      "sha256": "f6ee0823c19d8418327d3ed2c1734e211341c5e9f58f1d089863968c46c0ad2d"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V910_OSR_NATIVE_ADJACENT.md",
-      "sha256": "e1cb8d83e96dd990e38b1f556cca9bb376e1699fb72a06734aadc2e281881869"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V911_OSR_ADJACENT_HEAD_MOTION.md",
-      "sha256": "e0f847b6800bf8ea979fc10f63f6e95453fa6c83cbb794f0717506a2402c6bd1"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V912_GTA_OSR.md",
-      "sha256": "05cfb48ed9ce09c6cc932bad8d7767cbb95de48337f451d24dd6adf1dc655930"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V913_GTA_ORIGIN_RGB_COST.md",
-      "sha256": "044aa6a3c7347283c76f537b4af457c23eb610394a2cc1e7b94779322ead8b1c"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V914_BASIC_DEFAULTS.md",
-      "sha256": "f8107c5e027325138cb6497334cd2b27eed0e3809ce4aacdab7433e3741486e7"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V915_HFW_LUKE_LAYOUT.md",
-      "sha256": "8423208ce9c3d1bf509155635cb60def707566c82d71f4caeaa28c6a14cb777c"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V916_RIFE_PRECOMPILE_PROGRESS.md",
-      "sha256": "c1acb272b1f3956a1b24961b89916ab6519fb5387ee49ce3f166a850d4fee8ca"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V917_HFW_PRIVATE_CLOCK.md",
-      "sha256": "7a1424638889c8557243dedcea5d7293004a77f72359acdf96db4d0f6752a9f5"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V918_LUKE_MARKER_RECOVERY.md",
-      "sha256": "35240fbefe89e216694370001df10cc179d56491cd01a601175c2364c0b8a4d3"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V919_GTA_CABIN_HISTORY.md",
-      "sha256": "19ad86232373fb5fe2ab228c4a0f99835f7b962ecdd50750c3b996418c681d3e"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V920_OSR_EYE_CANVAS.md",
-      "sha256": "c3265e03291ce3bb72f9c7eeedbb36d6aedeb137eb7e60ff05622c77f2ad7abf"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V921_BENCHMARK_STABILITY.md",
-      "sha256": "0651a6d56c979a5ee49a87334bcad1199b1618dcbdb557f3cd0fe52df3d88ec3"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V922_BASIC_FLOW_TESTS.md",
-      "sha256": "73cff4168b82794ffaaa0f1e63066344532a5f3d35c839fced8cca354d88c1d6"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V923_OFR_TRIAL.md",
-      "sha256": "c922aff9f5ae0a0358d87558d7ea40aa40cda56cc87551b4ab19ffa70ab546e3"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V924_AER_FRAMEGEN.md",
-      "sha256": "d3bef1b9bf600f0a7a1faad3a519e39d73579732b55e2237294146d55b3630e4"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V925_AER_CONTINUITY.md",
-      "sha256": "b800f9c269e6890e423e2cb0f71327823d4862e1b86912cd444361f3baf62efc"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V926_RDR2_LUKE_VULKAN.md",
-      "sha256": "5b793a9ab2017f606d773024161df607e171e6ea706d42245d6b59b0bb5d5428"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V927_AER_COST.md",
-      "sha256": "415cf65e2028368a21b8479bfab65a8abd74a2a968c018e7599b64c765e05d09"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V927_GTA_RUNTIME_DISCOVERY.md",
-      "sha256": "8b125138b90b56e8523c3e54757fd6be8e1512ea5c5f70946797d81a3153c9f3"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V928_AER_GUIDES.md",
-      "sha256": "4a93ee4274facb84916890a282680044469bbaff08cb1f28063ecc7f1d5a4382"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V928_CYBERPUNK_OSR_MOTION.md",
-      "sha256": "9db9730b6c84d21b223eaf06c8e94faca3d96f233639b17971f503a665c7af8d"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V929_AER_NATIVE_TIMING.md",
-      "sha256": "882d6e08d043a3db8f49b698e0e85634d3e7b536c1d25bc2912fcd571ef11f29"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V929_RDR2_OSR_MOTION.md",
-      "sha256": "46394da944ab91da336846a9623a1ecf4fd6c60d52062144c66617777dca8af7"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V930_SWITCH_RECOVERY.md",
-      "sha256": "e8898db213ab1fa10146ac2517a7fa556097b81cfe46087f9fe6a6d1b4032352"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V960_NIGHTLY_ALIGNMENT.md",
-      "sha256": "87a062dd52a46001618400ce9c27a996dfd17b5ac96c38f4603b545d8692ebed"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V961_RIFE_NATIVE_PACING.md",
-      "sha256": "79ec95af9f9992f5ec3a6105e643c669c048cf601374d69c2aa74c89867dda25"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V962_RADEON_INTEGRATION.md",
-      "sha256": "effa7196b64cda8d5c1a611f72a810ccebb8e211a2d9014ddfbcd4e282762f15"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V963_GUIDE_PUBLICATION_PRESSURE.md",
-      "sha256": "6220bdda73754d8cb6175e5179a01fe683c55e3aa16e43ebfdda0a7eff81f3c0"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V963_LUKE_AER_GUIDES.md",
-      "sha256": "e22db3a05cdb71b2bca6db2c221f8660ddfda6b90f227554ed3c217ee2823e24"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V964_PRIVATE_LUKE_DLSSG.md",
-      "sha256": "1b7a264b46e4e8844524c4d49180d71ca201565292ec35dad67ed9f2967bbac6"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V965_NIGHTLY_ALIGNMENT.md",
-      "sha256": "bf9fca239e4627b540ca332ae4cd32b6fc0eb6ac975503ec5722ccbc330d5810"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V966_LUKE_GUIDE_OWNERSHIP.md",
-      "sha256": "fa8e63cadb3c03aadb00ec7e475a4b945fa2b87d2776611b143a6543bd05d257"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V967_LUKE_OWNED_GUIDES.md",
-      "sha256": "16801b1110696e363bdacd7415f259fdf4f0df2096b39c019c7483d21aabb2ce"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V968_RIFE_AER_PACING.md",
-      "sha256": "53297c2f19093784e7168228c3304927c2e5feb81ae6978f791461d45a3277ee"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V969_STATIC_PROJECTION.md",
-      "sha256": "e3f9c01adcd1d01bfc0a370e609009ed010d302f026038267c04b944b5624c85"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V970_AER_STATIC_PROJECTION.md",
-      "sha256": "1d3417d7d5e4b1c1f285e2b2862bcb3558f0ba8e25cb71af316b47f3765910a5"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V971_AER_METER.md",
-      "sha256": "85e8ed9e21bfdad35f88e8f3528f85c6336b336597eecd2318ee1776b468c4cc"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V972_AER_UI_PRIORITY.md",
-      "sha256": "2b2f07728c1ce62ef7fe8d990789daa6422b58573f5ccb40408e86b45138b1fe"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V973_LUKE_EXECUTION_AND_DISCOVERY.md",
-      "sha256": "8a41c3a0bc46eec4e215db5c7c28b4f509a34c0a329b0128e22c340cfbb724fc"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V974_AER_TOKEN_FIT.md",
-      "sha256": "dea70565766bdc5ef974151d33e26ec49f36803614317e29fe62ae4c03eb60f5"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V975_DLSSG_OUTPUT_CAPABILITY.md",
-      "sha256": "121f4de4bbc72391822b593bfc30d8c9bffcf799fc6c31f124c16918addf8ae9"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V976_AER_OPTICAL_HANDOFF.md",
-      "sha256": "23d88d0cff3f496fefdb5a1cefc6a7d158b3798eeab90fe54b6a2c403e5e85d8"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V977_GLOBAL_FRAMEGEN_OFF.md",
-      "sha256": "53c9127cadc5594da525a5d2a80052c8fb93984591970ab7f859170af382f7e3"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V978_MARKER_AND_EYE_CANVAS.md",
-      "sha256": "94f2fc5a23e868d652e31bd27f126c39be554c9d4ec9a208f99060db25f453f6"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V979_AER_DYNAMIC_CLIPPING.md",
-      "sha256": "8ef4dbff65df0e07819433cff31c289ad6727156b47f99a399a0573eaa156cb7"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V980_VULKAN_AER_MARKERS.md",
-      "sha256": "bbc5d02178c745b17b87da8ae93dccdfaee27ffb4fde666c0d9207ce49eca960"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V981_RDR2_AER_HISTORY.md",
-      "sha256": "817d8a1b7ae39fae128a1c890e049b41f36ec1b15d2243dda1ec9eb2f0b51307"
-    },
-    {
-      "path": "Build/FrameGeneration/docs/V982_HYBRID_OCCLUSION.md",
-      "sha256": "5d32036aed79822e9f3e564f8d22f79cd7871d2e4b7efc8ce990ef4d763b2d5d"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/AMD-FidelityFX-LICENSE.txt",
-      "sha256": "c93d509cd69d50698796c9c3274247352736ef122a3197ace2010f0978e21aa6"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/AMD-FidelityFX-MIT.txt",
-      "sha256": "c93d509cd69d50698796c9c3274247352736ef122a3197ace2010f0978e21aa6"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/ATTRIBUTION.md",
-      "sha256": "f365bc49e98a49200486bce846ee9edb838a6e19058647166aaed591b68ec4ce"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/Atkinson-Hyperlegible-OFL.txt",
-      "sha256": "b5b7a8bc1e0e92be9b64abd8abd92659488733aa5be8d982bc872c36dac73f08"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/Dear-ImGui-LICENSE.txt",
-      "sha256": "55e058cc5899e6077a819ad1005d6d1f4528f65ae100795c9692f9fa6525a8ce"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/GPL-3.0-or-later.txt",
-      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/MSVC_CRT_LICENSE.rtf",
-      "sha256": "14418dbd1aaca336872a00c28559f1073621239e08767ec8b2a772e12869291f"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/NVIDIA-DLSS-LICENSE.txt",
-      "sha256": "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/NVIDIA-DLSS.txt",
-      "sha256": "dc2778a3283427285984cdb5b3f7f03eae7d8a06057f672f2999c5ee7fd4f67d"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/NVIDIA-Optical-Flow-Headers.txt",
-      "sha256": "7a33974843d499399226737a0e55a1b8e96ecc984308f5b6372342dc03e4b53b"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/OFXR-LGPL-3.0.txt",
-      "sha256": "7d3a95e5e06978064ed3f8e2b7c8f845e7fd8a405294727cc708f94cb83b8059"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/OpenVR-BSD-3-Clause.txt",
-      "sha256": "9e6d1480fb68e86ceafed312f7e67dadcdc2a99b350b710d624b8f0f0f1a2329"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/OptiScaler-GPL-3.0.txt",
-      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/RenoDX_ATTRIBUTION.txt",
-      "sha256": "e190e5f66cb2a9f1bacf9e94ffe3a109e8691828520dd5cfb2cf34cde3b597e4"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/SafetyHook-Boost-1.0.txt",
-      "sha256": "36266a8fd073568394cb81cdb2b124f7fdae2c64c1a7ed09db34b4d22efa2951"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/UEVR-API-MIT.txt",
-      "sha256": "cc27a0965f070b29a0cb6bf0b4fd316c869c4cfe5d9a3ac4ce4fdefb60639a55"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/Vulkan-Headers-LICENSE.md",
-      "sha256": "f43ba543d73f08f7401d99b697b2b741704eb22b5447a5021fd92b279b297646"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/Zycore-MIT.txt",
-      "sha256": "a111d9315012e6cf95bcd0c1660bd1c9b63d4bdfb3edb1a6e904d49605825caf"
-    },
-    {
-      "path": "Build/FrameGeneration/licenses/Zydis-MIT.txt",
-      "sha256": "77f4584207ed4f10ca1455dfdd25264687321221692f37761e3c7d62100e3d9e"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/OFXR_vulkan_queue_layer.dll",
-      "sha256": "dd9b537eb3d5c56ae0756df24e39543387c1f5c1d912cf2bca37a48751c106e2"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/PDAFWPlugin.dll",
-      "sha256": "5f3cfc38903ac438241a3c47cb4bc3ac329cb39b056e33a63c20045fe15336f9"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/XR_APILAYER_XRFrameBridge_diagnostic.dll",
-      "sha256": "9768dfd3f1dc6b2c8590ab62b93be192599fa0fa9d04b08cc2bd8445ed913f68"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/nvngx.dll_dlssg.dll",
-      "sha256": "45434d63d72a93b9ce37bc4e4ab56d5cef5d904cfb41af933552a4d7927cfc3b"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/nvngx.dll_dlssnr.dll",
-      "sha256": "da7ee4d2c8c686b04bc112c1ab295fbefb65e47821a6a4645b094bf3a67f6787"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/nvngx_dlssg.dll",
-      "sha256": "ff6e90eb78b827927dff5b4ecc6b1c870c2e9bca29ed9f48c7d348cc9e170b82"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/ofxr_amd_fidelityfx_framegeneration_dx12.dll",
-      "sha256": "12a5081257ec95b0b53ad51b4a87fb3c03f97fe0bbb59f9496968f8d50ef93a6"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr/ofxr_bridge.ini",
-      "sha256": "860dd1f23a369f4cd90e9862e45db60787c4c88c9074ac3b03e62ce05826765b"
-    },
-    {
-      "path": "Build/FrameGeneration/ofxr_x86/XR_APILAYER_XRFrameBridge_diagnostic.dll",
-      "sha256": "3750f1c5564c5ad33f22dbbacdb43546d2f99ebbee018f84c57c699b633115ec"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/LICENSE",
-      "sha256": "4ce9c78e38e4ef608e68197769652f21058888301245e00bef110418f4863771"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/check_runtime.py",
-      "sha256": "ef78778d6039a546a47dd6a19fba70a4e5667dff1c2394ad9620f341ca9ea784"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/fused_warp.py",
-      "sha256": "569e27e51436e8ae1fc53b73969b75e63d1aec6ef61aa760608d3d83667e38fe"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/gpu_memory.py",
-      "sha256": "e465d89fc2db79cfee58e8ece24bb2290cb05a897899b798ad68c165aa291cbe"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_16_lite.py",
-      "sha256": "53d81db51f5983a76fc84df4d60012cf88d1822729245d22b862080fbc1d488b"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_25_lite.py",
-      "sha256": "af9d14c768234b1f837a74b05432c451de34b3e1a201ff0553195b3ca98bf54c"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_3.py",
-      "sha256": "18a09b3b4deb6d6b0a80718e9b7698bd64210bf2acee17a9e0fba79536a56c4c"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_4.py",
-      "sha256": "18a09b3b4deb6d6b0a80718e9b7698bd64210bf2acee17a9e0fba79536a56c4c"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_6.py",
-      "sha256": "f50e0b905168ab21f650a7fd13ee00a14b8b380077cd063993fadc631635e5bc"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/__init__.py",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/models/warplayer.py",
-      "sha256": "c3e47da7e968aa71c81cf2ce23c709e157cb5e07eab0f2de49df2a28aa2b1a14"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/overlay-manifest.json",
-      "sha256": "3162345b2d7f56920978e7a57b34aecec53a36dfcb288525084cf8e0f7a91ca8"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/runtime-lock.json",
-      "sha256": "b223caed29a584baa9a96b19071443ceca0c25dd37629223dfe7cc2c27636b7e"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/runtime_lease.py",
-      "sha256": "f844202cdcfe25738eab4cd4a80b5b8ff4188c74fe20398664d8392f0cd03367"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/trt_backend.py",
-      "sha256": "27cd9926ee491842a11f47827f60c9f210fb613085e1cd979ce7088179b8371f"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/trt_cache.py",
-      "sha256": "3ec3018306fb6640874c816554fdaadbc0732b9533b41d574265f3c478f79eec"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/trt_compile.py",
-      "sha256": "6c3dcfb93d4eec3d0b020ef24b5d7d4480a628285a6c79987bcea772e97bebc3"
-    },
-    {
-      "path": "Build/FrameGeneration/python/rife/worker.py",
-      "sha256": "459110b36a80b38c592f09dbd579eb4952c98580d612d2d0c5a08ae34131f9ef"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/dependencies.json",
-      "sha256": "212514458a6d90bc4b13f32954d32c86ac32146b57c9df7a1f61f641d19842ff"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/licenses/glslang.txt",
-      "sha256": "7d4c1655be3a4d99e8a4859335e28c8950f2e7f72dcf3eed3379846120f5bf47"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/licenses/json.txt",
-      "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/licenses/ncnn.txt",
-      "sha256": "3a066e39806976fe274a042929523c68821c54bcf73369ed61aae2717edd54e8"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/licenses/pnnx.txt",
-      "sha256": "3a066e39806976fe274a042929523c68821c54bcf73369ed61aae2717edd54e8"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/manifest.json",
-      "sha256": "28c6e167ce4cf282bfc3bde6593aefa5a62d83df74ea5663a62222e2d37b4a44"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/ofxr_rife_vulkan.exe",
-      "sha256": "a54888b4c9fd2e8f7daf1fa538a67ef1d660359f93739958b6368447544dc1b3"
-    },
-    {
-      "path": "Build/FrameGeneration/rife-vulkan/pnnx.exe",
-      "sha256": "b8c56a0b0319e6ce4d229e9a339e4ee377fb0c42f7f3e66eec235ed00cd71b18"
-    },
-    {
-      "path": "Build/FrameGeneration/scripts/Set-CrashDebug.ps1",
-      "sha256": "6d9adb02205f0c0fd471bcb6bd9565803f1bccef4efc63475677a98dceb34eaa"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/Inspect-NrCapture.py",
-      "sha256": "d42d343bb7ed7a0c3956124cf733a47e3d65d6c515b9ee0a86c41a502c84383a"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/Precompile-Rife.ps1",
-      "sha256": "9942c8b8034b05f062167faa2df67d1a4ed9d4c59575e4b5cb1317d9d7b3cdac"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/Setup-RifeRuntime.ps1",
-      "sha256": "3f72709e947aa41c6815b8ee53cd94f1e56e4ed22408f54567b30412ee0ce5c9"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/Test-RifeVulkan.ps1",
-      "sha256": "8f84a65d7db8bf7b4db2f2e6200845c5630b36dbf43c516c4b9fba534606cf02"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/build_rife_overlay_manifest.py",
-      "sha256": "6b6ae3deedfe4ccb35f40afcd8d411a6c251e708a4dc8e99c4bd9bf25b315311"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/install_rife_runtime.py",
-      "sha256": "3898cb94a3a0bb454a012c53eed38f5c3c1f2db7e21d37072e5c11ca5bc9bcf4"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/install_rife_vulkan.py",
-      "sha256": "8304be74bef060caaddc7c5b220bea95e82221bfa977e42c59ae94a0caca8a5d"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/precompile_rife.py",
-      "sha256": "04401e5937eb558e47b99693994d9e6b303d6fb5f84223848e5e92a4b87edc4c"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/precompile_rife_vulkan.py",
-      "sha256": "c9afcf8c620454e244cb9c9696ed09769c19bf4a50d13a18660b85e01ff3b8fc"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/prepare_rife_runtime.py",
-      "sha256": "040b2f79046fe6081f8447806c47dcb98d4cc51409b980efb0e74f2863e65d88"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/concrt140.dll",
-      "sha256": "2405355f0a58067b258f8df33c327e3a3d716eaac5a3a5aebb757842d85bd376"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140.dll",
-      "sha256": "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_1.dll",
-      "sha256": "bfad5aef4c63a669e3c140655cdfdf395b6c979b400a447bd5dcb65ed8826c3d"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_2.dll",
-      "sha256": "3ea06f0ee098b4823cb79599df3780e7f23cce52c19aac31d2a0d47efe33a5e9"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_atomic_wait.dll",
-      "sha256": "640b2aefced484d0368eea5bdd06addd0658a3a70a49256e560d6923b404a479"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_codecvt_ids.dll",
-      "sha256": "f2069a52880ec885ee7f0511186100eb7fada0411a2b4948fafea7735b878a18"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/vccorlib140.dll",
-      "sha256": "19839407c3fdbc824e5bce189bf68ddf8097f12ec28b757797ffa0415c144ddd"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/vcruntime140.dll",
-      "sha256": "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/vcruntime140_1.dll",
-      "sha256": "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/rife-msvc-crt/vcruntime140_threads.dll",
-      "sha256": "219915cf20822f34d5e7c1fdd4e21ae7f3396881096c51036225fb8f84b47afa"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/test_rife_vulkan.py",
-      "sha256": "af487c621d65c570f1fd90a7675c9b008917c55e7013c842ece35f79eb3e14d2"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/update_rife_overlay.py",
-      "sha256": "80b5eacbb9e81b0bba77a22c76120dbeb9e2b84d6e4e16c8acb5cf7c79413e39"
-    },
-    {
-      "path": "Build/FrameGeneration/tools/vulkan_compile.py",
-      "sha256": "049091afcd93790a8fbc85a55e944b3b503d8dadfee7f9276674c8cc0c7f9f23"
-    },
-    {
-      "path": "Build/HeadsetProjectionPreview/kyty_gpu.construction.dlss.dll",
-      "sha256": "f25097e595c188fe48f2f45d7d3f212c21f9b1ad797cf59e76eaa23684cb3332"
-    },
-    {
-      "path": "Build/HeadsetProjectionPreview/kyty_gpu.diagnostics.dll",
-      "sha256": "47beecb25b6903a3a0ddc6d92f263dfa0ad52971aa6c3c438649b1d19f742e8f"
-    },
-    {
-      "path": "Build/HeadsetProjectionPreview/kyty_gpu.dll",
-      "sha256": "66ffe073b62522ecf4da06ad5697d764644bdde458ce2c2468399e72f3c5ad06"
-    },
-    {
-      "path": "Build/HeadsetProjectionPreview/kyty_gpu.dlss.dll",
-      "sha256": "66ffe073b62522ecf4da06ad5697d764644bdde458ce2c2468399e72f3c5ad06"
-    },
-    {
-      "path": "Build/RunHybrid/assets/cursors/drawing.png",
-      "sha256": "20ba1a0f689bd75b40e647846785be19beadd677b5ff7312b57f9b300d55dc3b"
-    },
-    {
-      "path": "Build/RunHybrid/assets/cursors/hand.png",
-      "sha256": "62e9a86e27ca129ae36b44b77e1862a1a27e1a5ffd070a4c5284e4d9c8aa8f38"
-    },
-    {
-      "path": "Build/RunHybrid/assets/images/hidden-trophy.png",
-      "sha256": "8875d6e4e9f27e4c62877703cb0f8af91cb3fc2543953c316f11fdf6b88eb69a"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/ar-AE.json",
-      "sha256": "7cc5a6a83ca9f1ece1893418386f1f5023a70f4b63e048d683ee8cec53a49169"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/cs-CZ.json",
-      "sha256": "59441183da2bd3e95eee0cdaae0798054cadb0bf1efb301c21ce530d93394312"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/da-DK.json",
-      "sha256": "6b13e9680f489f7c1f817f276fbb993a738ca25815ee188b37a2aba879a63ab4"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/de-DE.json",
-      "sha256": "d676545ada2979513fd381dab14c6dbd66aff50e28dcc39abe83cf3f5088be59"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/el-GR.json",
-      "sha256": "adb88b4e8aeefb075a6281621a78b5300d5837a519e67d93e9c9ff212337f0a8"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/en-GB.json",
-      "sha256": "cde66ebeb234aab1c176c3cd66e6a64ab774d0b14d15e85c3f8514eeebb63d6c"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/en-US.json",
-      "sha256": "cde66ebeb234aab1c176c3cd66e6a64ab774d0b14d15e85c3f8514eeebb63d6c"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/es-419.json",
-      "sha256": "951e8f687f8d256d4bed0b387563207a0e5d8a980e72243725e5a70b214c0b3b"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/es-ES.json",
-      "sha256": "951e8f687f8d256d4bed0b387563207a0e5d8a980e72243725e5a70b214c0b3b"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/fi-FI.json",
-      "sha256": "9b4def49069e9e22ce94820a61d89f430275227b1a1a1f3a68047fe1201a686c"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/fr-CA.json",
-      "sha256": "3d1f4dbe48f28c305e038270ec5fa4689db9412dbc0cd8e4207d3c968fd009a0"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/fr-FR.json",
-      "sha256": "3d1f4dbe48f28c305e038270ec5fa4689db9412dbc0cd8e4207d3c968fd009a0"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/hu-HU.json",
-      "sha256": "0bae1ac4be71762442754ad42b7292c4c5d41ee2f80e5c06c42f556fd367f774"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/id-ID.json",
-      "sha256": "d728bfe1ac9c345a594958fb27843fc30c678eaaba5720b21deaa31f4bb69ab8"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/it-IT.json",
-      "sha256": "49c754e410e2a83fb444a936badf85426c986a5425cffdd14e86b1fb5a3203ed"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/ja-JP.json",
-      "sha256": "43ea9de0d2818adc3922fe90ed159eca8af531ea9affc51940bfc4f8457b8dcf"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/ko-KR.json",
-      "sha256": "d19b5c12cb3e0a12630b52f260a7efec107ab2006d5e6c2ff0e98e71bbaf500e"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/nl-NL.json",
-      "sha256": "088dc878270a6314304bab78c1dcc0aa9564cbc6e733bf6350c4dd949fd4ab6c"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/no-NO.json",
-      "sha256": "ecefe3196169856a0747f859f5d5c8353c9539708f9891987c1461fc705b8562"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/pl-PL.json",
-      "sha256": "8995a5e3e1a2b08f6c3b6fc0da24d46a8f57f81c4fe46f8cfbcc181369c15cc3"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/pt-BR.json",
-      "sha256": "3e58c3afec9cab0c7ac91a084b27d819e9d7dd2db6e02bdc49caf47a8703753d"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/pt-PT.json",
-      "sha256": "3e58c3afec9cab0c7ac91a084b27d819e9d7dd2db6e02bdc49caf47a8703753d"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/ro-RO.json",
-      "sha256": "6ec99bd4e3d4707eb75e6c8857c8614d9b5c46f05dae65d13a95e5fec72a66e4"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/ru-RU.json",
-      "sha256": "f93e9fe4c50fc249ec1938de1cc67ef8ae04f16ca341890f2d935a750814487d"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/sv-SE.json",
-      "sha256": "83ecac3e2eec1e0b82dd703f4ba3b7a29e9a56202ae37ef02dfed6e553c96bf0"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/th-TH.json",
-      "sha256": "d75e9b6a0f4317814f9d11f67fd065dccb2408896fbe2ca9c86d6651f8700983"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/tr-TR.json",
-      "sha256": "ea95d2c2a4fd1d27576d1cb8a1fb368f32a24d1cf4c6ee9582923d0c0bb0ed4c"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/vi-VN.json",
-      "sha256": "f75267d3b69454a24453d6f7ee43c5c12224e64168c81824e59ccadfae64afb7"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/zh-Hans.json",
-      "sha256": "f801134bbaffc32b134b3e43a18fe6b421dbec1c89791b84d3ca8b962d737189"
-    },
-    {
-      "path": "Build/RunHybrid/assets/localization/zh-Hant.json",
-      "sha256": "6bbaf7ad8e7b93673055b2736d23890d794957cb1c2d3f074e9180e4377db760"
-    },
-    {
-      "path": "Build/RunHybrid/assets/sounds/trophy-unlock.wav",
-      "sha256": "99f45c458ed7895c61d2fe18c3408005ae3832749ba3afa7e3361ddb879e01c7"
-    },
-    {
-      "path": "Check Conversion.bat",
-      "sha256": "97ca33b697747a7bd75d0c66aa6d4e6d1b652253122c1447f87ecd09e2728ee1"
-    },
-    {
-      "path": "Check-Conversion.ps1",
-      "sha256": "d7f96f1a282cc7b671f2e8715e1f8f185118a8a47926ea333ed941f68ae9fd4e"
-    },
-    {
-      "path": "Install VR.bat",
-      "sha256": "3baa9a2c5caf6a0cffb4d84329295402affa73ee8c7338f6788128a77cd68ef0"
-    },
-    {
-      "path": "Install-HudLayout.ps1",
-      "sha256": "83ebd2c180798d98c25b10f46bd354c94d1fb94c0827d38d72ee12a3082ff28b"
-    },
-    {
-      "path": "Install-VR.ps1",
-      "sha256": "38f35b01fed37e4749d8d06ba81d55b4309778a7e2a2de404f7c84c2af732597"
-    },
-    {
-      "path": "LICENSE",
-      "sha256": "11c4a8b414a534365f02da7dad9dc3e471d35b15ed31df9d4006fb2a144c4443"
-    },
-    {
-      "path": "Play AstroHybrid VR - Launcher.bat",
-      "sha256": "ae616e840d2d9d94471b16015dc7f164fe5b825c6871d36f24b2be7dd658d448"
-    },
-    {
-      "path": "Play AstroHybrid VR.bat",
-      "sha256": "19dd44d2c280a1ebdb42afcf4e41ec3f51bfec2ffcdefc3904b6aafccdc99302"
-    },
-    {
-      "path": "README.md",
-      "sha256": "ec9ded6547bfa679c665f0f09ff03e4bea321ef6f52a8b61f90fba153d0f81b7"
-    },
-    {
-      "path": "VR-support/libSceVideoOut.prx",
-      "sha256": "1f3dfd8eb1a7d742c9d6ba1c62e9d278abfecd4cd39c26e59700ad4af5fa381f"
-    }
-  ]
+    "version":  "0.1.6",
+    "base_runtime":  "AstroHybrid 1.2.1",
+    "game":  {
+                 "title_id":  "PPSA21567",
+                 "version":  "01.019.000",
+                 "base_name":  "AstroBot-NonRT-SoftAssert",
+                 "source_sha256":  "5f52defd58fbd476091a0ea02e07835fdc32ce982d7c5176f26bbdf461141949",
+                 "target_name":  "AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard",
+                 "target_sha256":  "15867b84b0851b16c66f1a608a5fd55940b1ca07297de74ab57f9186c6f7988c",
+                 "conversions":  [
+                                     {
+                                         "variant":  "AstroHybrid 1.2.1 AMD",
+                                         "source_sha256":  "367854fe30f577621b6a159dcc8c095ebc7d872247cbc661b9c3928f217f404c",
+                                         "target_sha256":  "fa2f8d212ac04a48a04372553e0c2b8fcd56b9b195569d9022426e3f5b779907",
+                                         "dlss_sha256":  "2aab2abdfeaebe5f8ae272769d75185d67b521076e767af77b391c2798aab9bc"
+                                     },
+                                     {
+                                         "variant":  "AstroHybrid 1.2.1 Intel",
+                                         "source_sha256":  "0b3633a1e742dd3ac00623912766c57c7da5e94e55dd4d91d1ec511d86bd60af",
+                                         "target_sha256":  "f0d6c014fa20b069cbdf4aeae16d771e3400e1ca055c534cfee686a123817c9a",
+                                         "dlss_sha256":  "ea3885287bb41e820649d11da4a31d53a65131f5e749a113e217c9a03b6e0719"
+                                     }
+                                 ],
+                 "patches":  [
+                                 {
+                                     "offset":  121592501,
+                                     "before":  "4489730c780db8040000004183fe057304eb0531c089430c",
+                                     "after":  "b80400000089430c90909090909090909090909090909090"
+                                 },
+                                 {
+                                     "offset":  120902035,
+                                     "before":  "4180bd75d501000074334180bde8d601000075290fb605b2cdae0784c00f8467b30000488b3dabcdae07418bb570d50100e8478a0a0041898570d50100",
+                                     "after":  "4183bd70d5010004770b41c78570d5010004000000eb269090909090909090909090909090909090909090909090909090909090909090909090909090"
+                                 },
+                                 {
+                                     "offset":  2843277,
+                                     "before":  "448ba0bc933000",
+                                     "after":  "41bc0400000090"
+                                 },
+                                 {
+                                     "offset":  13036521,
+                                     "before":  "448bb8bc933000",
+                                     "after":  "41bf0400000090"
+                                 },
+                                 {
+                                     "offset":  13054357,
+                                     "before":  "448bb8bc933000",
+                                     "after":  "41bf0400000090"
+                                 },
+                                 {
+                                     "offset":  13052549,
+                                     "before":  "74108b80b0933000",
+                                     "after":  "9090b80400000090"
+                                 },
+                                 {
+                                     "offset":  2820113,
+                                     "before":  "48b90300000003000000",
+                                     "after":  "48b90400000004000000"
+                                 },
+                                 {
+                                     "offset":  2820251,
+                                     "before":  "48b90300000003000000",
+                                     "after":  "48b90400000004000000"
+                                 },
+                                 {
+                                     "offset":  2854396,
+                                     "before":  "48b90300000003000000",
+                                     "after":  "48b90400000004000000"
+                                 },
+                                 {
+                                     "offset":  120948080,
+                                     "before":  "48b90300000003000000",
+                                     "after":  "48b90400000004000000"
+                                 },
+                                 {
+                                     "offset":  122223910,
+                                     "before":  "48b90300000003000000",
+                                     "after":  "48b90400000004000000"
+                                 },
+                                 {
+                                     "offset":  8902987,
+                                     "before":  "0f823a010000",
+                                     "after":  "0f82b0daffff"
+                                 },
+                                 {
+                                     "offset":  8893441,
+                                     "before":  "cccccccccccccccccccccccccccc",
+                                     "after":  "4d85ff0f8447250000e97c260000"
+                                 },
+                                 {
+                                     "offset":  11991093,
+                                     "before":  "c5f8288da0f9ffffc785c0fbffff01000000c5f8118d40faffffc5f8118d60faffffc5f8118d80faffffc5f8118d50faffffc5f8118d70faffffc5f8299570f9ffffc5f8118d90faffffeb236666666666662e0f1f840000000000",
+                                     "after":  "c5f8104e40c5f0c24e5003c5f850c1a8070f852f030000c5f8288da0f9ffffc785c0fbffff01000000488d8540faffffc5f81108c5f8114810c5f8114820c5f8114830c5f8114840c5f8114850c5f8299570f9ffffeb1890909090"
+                                 }
+                             ],
+                 "dlss_target_name":  "AstroBot-NonRT-SoftAssert-DLSS-PhysicsGuard",
+                 "dlss_patch_offsets":  [
+                                            8902987,
+                                            8893441,
+                                            11991093
+                                        ],
+                 "dlss_sha256":  "a2dec4213b4f6ce5799191a11502edd23956df42b7baf74084b9e2ead64b8fe7"
+             },
+    "payload":  [
+                    {
+                        "path":  "AstroHybrid VR Launcher.ps1",
+                        "sha256":  "f6a831d11283f447a30cb1c6dbfec07daf2c24672df166bf53bd6013e60ac2d6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/BUILD_PROVENANCE.json",
+                        "sha256":  "b62c0eb88d2fb198c6a1b1d92cc90cb7cee6bf21bf96a056d507980e56990500"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/CHANGELOG.md",
+                        "sha256":  "716c1a99570faf05c49f0da9c3478ae1e48e458e7a5817c817466c19f18b941f"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/BUILDING_RIFE.md",
+                        "sha256":  "94506add1866f1d23c37e05b8ee6d6070eed0e6cb989790c9ce218a6398420ed"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/OSR_HISTORY.md",
+                        "sha256":  "347cd9a3c9c7b938ec0448f1a8d75b7b9ebf02743c6f86bc4095acf023b0ddc9"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/RDR2_EDGE_CAMERA_PHASE_TRIAL.md",
+                        "sha256":  "efa5a0ce367233be02e5a1cba78ca203a3e41da49fb5fe4cd4edd752a3dda04e"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/RDR2_MOTION_TIMING_TRIAL.md",
+                        "sha256":  "720ceb78fce1783378e9d96aa3d3788ffb72f34d26418a368378fec1fa22cf3d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/RIFE.md",
+                        "sha256":  "6a0040e9af4c0c468f329ffdaa1ae7753fa79407995afb647efdf5518677a0df"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/RIFE_VULKAN.md",
+                        "sha256":  "ddb96a949d500ad72be9eb4a51e833886e2990d317b69572eedffda6152d7b83"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/STATUS_JSON.md",
+                        "sha256":  "dc962688f1031959c773dc2dac733f1c24dbb987f64b459c53450c22ec72b149"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/TROUBLESHOOTING.md",
+                        "sha256":  "6e78af2a43ecb154993bbc2251deb8a6119ea92d0d4f603e7dd3fa99bb3b6eda"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V849_NR_CAPTURE.md",
+                        "sha256":  "c0e00a379882cf11c3cc11b3088b171875551a7d3fe3676ec479cbbb6fb245da"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V850_MSFS_NR.md",
+                        "sha256":  "0ab66cc21e0806707953ca4febf0ce6c8ada554f05ec6d9d5f1596a668237427"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V851_NR_STARTUP.md",
+                        "sha256":  "e329b179ff3b07cd29d530b7e960ea0b68789b4d9cc28320268d77a5e520ed60"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V852_NR_COLOUR.md",
+                        "sha256":  "8af9df0254f504745f4da85426890c975af8c939fb2af509f131d7511f2b58cc"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V862_RIFE_TIMEOUT.md",
+                        "sha256":  "c2f20fbcac8ecf3de40ca8370caefc023d84feda093af257b26f0a373f7b0825"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V863_RIFE_PRECOMPILE.md",
+                        "sha256":  "adcdb7bf59b191f26e9caf41c0db0f67112d0867ad751f7440f71cf2bda49605"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V864_RIFE_OVERLAY_UPDATE.md",
+                        "sha256":  "ee7ace735ce296a487706fa5505b1d9954e4278b80df2ea6a364dcee800891aa"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V865_RIFE_PIPELINE.md",
+                        "sha256":  "6e6385b2726d5cd91903cf5d21742d7e2422be674e590568e3f0f83ec70a1396"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V866_RIFE_OUTPUT_BANKS.md",
+                        "sha256":  "b8581038e5a553350e1cabe898104033ac146a7cb09892c2f1b21223c77b8e8a"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V867_RIFE_INPUT_TIMING.md",
+                        "sha256":  "03c40ffab3f65212e8dfe9541b0be5a0adcdf1790beb0ed6c06cf0625756e9b1"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V868_RIFE_FRACTION_BATCH.md",
+                        "sha256":  "ace337350a7fb52a93fdc5e5365d22e55b3c0f3079703782e33b1a289bb693de"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V886_D11_FG_CAPTURE.md",
+                        "sha256":  "90de51e806eeb9a3b50cc89881f2f9844006113a61190bf1452bc18c99a8c87f"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V890_OSR_VISIBLE_WARP.md",
+                        "sha256":  "0d5f21fc216a1cf45fe24384d268e92adef8f03b15fc6f6f59dc2ed9f0281231"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V891_OSR_DISOCCLUSION_DEPTH.md",
+                        "sha256":  "f76210683925343a1c4a4ea323e4a035fef61a8d08acc6e06f4cf9a3ac52e4a2"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V892_BENCHMARK_MEMORY.md",
+                        "sha256":  "338363900568ffe958a2d322319f34af5e1a502eb3050b125cfa9a7481a7ce09"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V893_UI_AND_INVENTORY.md",
+                        "sha256":  "721947fb876d3df483a72ba99859fba22a94534a2e1395a00506c9bd9c262827"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V894_UEVR_PANEL_LIFETIME.md",
+                        "sha256":  "e1bd7b46f077fb25eca7effc9ee3c23b80909fd4f954969ee7af0ce3fe71b04b"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V895_UEVR_AUXILIARY_BUDGET.md",
+                        "sha256":  "ea136beaff76ce4920fde2212fbce2651ead93fb62267c9c91ed33884b92a076"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V896_SHARED_UI_ATLAS.md",
+                        "sha256":  "efd38d9ee8dd42d69ae2543ee032509947c4805bf5680b8757fde0a51d1717c2"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V897_AUTOMATIC_UI_BUDGET.md",
+                        "sha256":  "2a25b35610ac52d2e9158a5e15bfc4deb96596a054a71f9faa6e2853ab8d6881"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V898_BENCHMARK_RECONFIGURE.md",
+                        "sha256":  "09b41da9b496fcafbf2cea5ae5983bf782f40884c104730f9b79ef597c86eb26"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V899_RIFE_READINESS_RECOVERY.md",
+                        "sha256":  "20e62951c2974b97956673496fd72b617f4c4682b3fcf9c927d35bf8a93f1d35"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V900_CPU_METER.md",
+                        "sha256":  "220581e942894f36bf0f1afe4c1da8fed6a7db0bb792d298ad265f93be7499b2"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V901_PROJECTION_CONTINUITY.md",
+                        "sha256":  "a3f8c14fde1f61b4736ab18a4bbe5be4cda39d84cfd252967866237178585094"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V902_OSR_PREVIOUS_BASE.md",
+                        "sha256":  "555c6efeec5c6957f61ccdead9af899bbdd51616993d7e9f4de39c690fa5c3f8"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V903_OSR_V889_ONLY.md",
+                        "sha256":  "718785f8ab716773a425a285a850eeb1a15d475adbb7ddacf0e5ade6df5cbf02"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V904_OSR_CURRENT_MOTION.md",
+                        "sha256":  "532f850b94f0717c4fe2da6e212636c7e18b0d000ed25335dd158b5c9f2d241b"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V905_OSR_INTERLEAVED_GATE.md",
+                        "sha256":  "05221173435256c262dbb32e0fcd85a73daf16242cabda06df07b50e550b465c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V906_OSR_CURRENT_SCREEN_MOTION.md",
+                        "sha256":  "c2aee4f6fa56048fb3e961bbb05b1d74ef13fe39c08de26844dc63ac435c15c3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V907_OSR_TRUSTED_EDGE_MOTION.md",
+                        "sha256":  "5d680a424381684afc6fe614e7b7fb5e35e30b7e871c058c26a3aade696143f2"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V908_LUKE_RIFE_ASYNC.md",
+                        "sha256":  "165fca73ddfc3ad4ad752f4243ecbda3bd9aca5f0d28397cec9679419f69767f"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V909_GTA_LUKE_LAYOUT.md",
+                        "sha256":  "f6ee0823c19d8418327d3ed2c1734e211341c5e9f58f1d089863968c46c0ad2d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V910_OSR_NATIVE_ADJACENT.md",
+                        "sha256":  "e1cb8d83e96dd990e38b1f556cca9bb376e1699fb72a06734aadc2e281881869"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V911_OSR_ADJACENT_HEAD_MOTION.md",
+                        "sha256":  "e0f847b6800bf8ea979fc10f63f6e95453fa6c83cbb794f0717506a2402c6bd1"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V912_GTA_OSR.md",
+                        "sha256":  "05cfb48ed9ce09c6cc932bad8d7767cbb95de48337f451d24dd6adf1dc655930"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V913_GTA_ORIGIN_RGB_COST.md",
+                        "sha256":  "044aa6a3c7347283c76f537b4af457c23eb610394a2cc1e7b94779322ead8b1c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V914_BASIC_DEFAULTS.md",
+                        "sha256":  "f8107c5e027325138cb6497334cd2b27eed0e3809ce4aacdab7433e3741486e7"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V915_HFW_LUKE_LAYOUT.md",
+                        "sha256":  "8423208ce9c3d1bf509155635cb60def707566c82d71f4caeaa28c6a14cb777c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V916_RIFE_PRECOMPILE_PROGRESS.md",
+                        "sha256":  "c1acb272b1f3956a1b24961b89916ab6519fb5387ee49ce3f166a850d4fee8ca"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V917_HFW_PRIVATE_CLOCK.md",
+                        "sha256":  "7a1424638889c8557243dedcea5d7293004a77f72359acdf96db4d0f6752a9f5"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V918_LUKE_MARKER_RECOVERY.md",
+                        "sha256":  "35240fbefe89e216694370001df10cc179d56491cd01a601175c2364c0b8a4d3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V919_GTA_CABIN_HISTORY.md",
+                        "sha256":  "19ad86232373fb5fe2ab228c4a0f99835f7b962ecdd50750c3b996418c681d3e"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V920_OSR_EYE_CANVAS.md",
+                        "sha256":  "c3265e03291ce3bb72f9c7eeedbb36d6aedeb137eb7e60ff05622c77f2ad7abf"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V921_BENCHMARK_STABILITY.md",
+                        "sha256":  "0651a6d56c979a5ee49a87334bcad1199b1618dcbdb557f3cd0fe52df3d88ec3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V922_BASIC_FLOW_TESTS.md",
+                        "sha256":  "73cff4168b82794ffaaa0f1e63066344532a5f3d35c839fced8cca354d88c1d6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V923_OFR_TRIAL.md",
+                        "sha256":  "c922aff9f5ae0a0358d87558d7ea40aa40cda56cc87551b4ab19ffa70ab546e3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V924_AER_FRAMEGEN.md",
+                        "sha256":  "d3bef1b9bf600f0a7a1faad3a519e39d73579732b55e2237294146d55b3630e4"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V925_AER_CONTINUITY.md",
+                        "sha256":  "b800f9c269e6890e423e2cb0f71327823d4862e1b86912cd444361f3baf62efc"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V926_RDR2_LUKE_VULKAN.md",
+                        "sha256":  "5b793a9ab2017f606d773024161df607e171e6ea706d42245d6b59b0bb5d5428"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V927_AER_COST.md",
+                        "sha256":  "415cf65e2028368a21b8479bfab65a8abd74a2a968c018e7599b64c765e05d09"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V927_GTA_RUNTIME_DISCOVERY.md",
+                        "sha256":  "8b125138b90b56e8523c3e54757fd6be8e1512ea5c5f70946797d81a3153c9f3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V928_AER_GUIDES.md",
+                        "sha256":  "4a93ee4274facb84916890a282680044469bbaff08cb1f28063ecc7f1d5a4382"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V928_CYBERPUNK_OSR_MOTION.md",
+                        "sha256":  "9db9730b6c84d21b223eaf06c8e94faca3d96f233639b17971f503a665c7af8d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V929_AER_NATIVE_TIMING.md",
+                        "sha256":  "882d6e08d043a3db8f49b698e0e85634d3e7b536c1d25bc2912fcd571ef11f29"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V929_RDR2_OSR_MOTION.md",
+                        "sha256":  "46394da944ab91da336846a9623a1ecf4fd6c60d52062144c66617777dca8af7"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V930_SWITCH_RECOVERY.md",
+                        "sha256":  "e8898db213ab1fa10146ac2517a7fa556097b81cfe46087f9fe6a6d1b4032352"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V960_NIGHTLY_ALIGNMENT.md",
+                        "sha256":  "87a062dd52a46001618400ce9c27a996dfd17b5ac96c38f4603b545d8692ebed"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V961_RIFE_NATIVE_PACING.md",
+                        "sha256":  "79ec95af9f9992f5ec3a6105e643c669c048cf601374d69c2aa74c89867dda25"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V962_RADEON_INTEGRATION.md",
+                        "sha256":  "effa7196b64cda8d5c1a611f72a810ccebb8e211a2d9014ddfbcd4e282762f15"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V963_GUIDE_PUBLICATION_PRESSURE.md",
+                        "sha256":  "6220bdda73754d8cb6175e5179a01fe683c55e3aa16e43ebfdda0a7eff81f3c0"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V963_LUKE_AER_GUIDES.md",
+                        "sha256":  "e22db3a05cdb71b2bca6db2c221f8660ddfda6b90f227554ed3c217ee2823e24"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V964_PRIVATE_LUKE_DLSSG.md",
+                        "sha256":  "1b7a264b46e4e8844524c4d49180d71ca201565292ec35dad67ed9f2967bbac6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V965_NIGHTLY_ALIGNMENT.md",
+                        "sha256":  "bf9fca239e4627b540ca332ae4cd32b6fc0eb6ac975503ec5722ccbc330d5810"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V966_LUKE_GUIDE_OWNERSHIP.md",
+                        "sha256":  "fa8e63cadb3c03aadb00ec7e475a4b945fa2b87d2776611b143a6543bd05d257"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V967_LUKE_OWNED_GUIDES.md",
+                        "sha256":  "16801b1110696e363bdacd7415f259fdf4f0df2096b39c019c7483d21aabb2ce"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V968_RIFE_AER_PACING.md",
+                        "sha256":  "53297c2f19093784e7168228c3304927c2e5feb81ae6978f791461d45a3277ee"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V969_STATIC_PROJECTION.md",
+                        "sha256":  "e3f9c01adcd1d01bfc0a370e609009ed010d302f026038267c04b944b5624c85"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V970_AER_STATIC_PROJECTION.md",
+                        "sha256":  "1d3417d7d5e4b1c1f285e2b2862bcb3558f0ba8e25cb71af316b47f3765910a5"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V971_AER_METER.md",
+                        "sha256":  "85e8ed9e21bfdad35f88e8f3528f85c6336b336597eecd2318ee1776b468c4cc"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V972_AER_UI_PRIORITY.md",
+                        "sha256":  "2b2f07728c1ce62ef7fe8d990789daa6422b58573f5ccb40408e86b45138b1fe"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V973_LUKE_EXECUTION_AND_DISCOVERY.md",
+                        "sha256":  "8a41c3a0bc46eec4e215db5c7c28b4f509a34c0a329b0128e22c340cfbb724fc"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V974_AER_TOKEN_FIT.md",
+                        "sha256":  "dea70565766bdc5ef974151d33e26ec49f36803614317e29fe62ae4c03eb60f5"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V975_DLSSG_OUTPUT_CAPABILITY.md",
+                        "sha256":  "121f4de4bbc72391822b593bfc30d8c9bffcf799fc6c31f124c16918addf8ae9"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V976_AER_OPTICAL_HANDOFF.md",
+                        "sha256":  "23d88d0cff3f496fefdb5a1cefc6a7d158b3798eeab90fe54b6a2c403e5e85d8"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V977_GLOBAL_FRAMEGEN_OFF.md",
+                        "sha256":  "53c9127cadc5594da525a5d2a80052c8fb93984591970ab7f859170af382f7e3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V978_MARKER_AND_EYE_CANVAS.md",
+                        "sha256":  "94f2fc5a23e868d652e31bd27f126c39be554c9d4ec9a208f99060db25f453f6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V979_AER_DYNAMIC_CLIPPING.md",
+                        "sha256":  "8ef4dbff65df0e07819433cff31c289ad6727156b47f99a399a0573eaa156cb7"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V980_VULKAN_AER_MARKERS.md",
+                        "sha256":  "bbc5d02178c745b17b87da8ae93dccdfaee27ffb4fde666c0d9207ce49eca960"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V981_RDR2_AER_HISTORY.md",
+                        "sha256":  "817d8a1b7ae39fae128a1c890e049b41f36ec1b15d2243dda1ec9eb2f0b51307"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/docs/V982_HYBRID_OCCLUSION.md",
+                        "sha256":  "5d32036aed79822e9f3e564f8d22f79cd7871d2e4b7efc8ce990ef4d763b2d5d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/LEGGIMI-RADEON.txt",
+                        "sha256":  "18628bed14165ffba8a3534cc26fbf32fc4c2b6f19bd33a519dfb5e6dae4eb1e"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/LICENSE",
+                        "sha256":  "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/AMD-FidelityFX-LICENSE.txt",
+                        "sha256":  "c93d509cd69d50698796c9c3274247352736ef122a3197ace2010f0978e21aa6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/AMD-FidelityFX-MIT.txt",
+                        "sha256":  "c93d509cd69d50698796c9c3274247352736ef122a3197ace2010f0978e21aa6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/Atkinson-Hyperlegible-OFL.txt",
+                        "sha256":  "b5b7a8bc1e0e92be9b64abd8abd92659488733aa5be8d982bc872c36dac73f08"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/ATTRIBUTION.md",
+                        "sha256":  "f365bc49e98a49200486bce846ee9edb838a6e19058647166aaed591b68ec4ce"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/Dear-ImGui-LICENSE.txt",
+                        "sha256":  "55e058cc5899e6077a819ad1005d6d1f4528f65ae100795c9692f9fa6525a8ce"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/GPL-3.0-or-later.txt",
+                        "sha256":  "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/MSVC_CRT_LICENSE.rtf",
+                        "sha256":  "14418dbd1aaca336872a00c28559f1073621239e08767ec8b2a772e12869291f"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/NVIDIA-DLSS.txt",
+                        "sha256":  "dc2778a3283427285984cdb5b3f7f03eae7d8a06057f672f2999c5ee7fd4f67d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/NVIDIA-DLSS-LICENSE.txt",
+                        "sha256":  "3027f23ca5a46dd9cb8183fbd522983a86f64d7daac5982912bf9f214671f294"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/NVIDIA-Optical-Flow-Headers.txt",
+                        "sha256":  "7a33974843d499399226737a0e55a1b8e96ecc984308f5b6372342dc03e4b53b"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/OFXR-LGPL-3.0.txt",
+                        "sha256":  "7d3a95e5e06978064ed3f8e2b7c8f845e7fd8a405294727cc708f94cb83b8059"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/OpenVR-BSD-3-Clause.txt",
+                        "sha256":  "9e6d1480fb68e86ceafed312f7e67dadcdc2a99b350b710d624b8f0f0f1a2329"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/OptiScaler-GPL-3.0.txt",
+                        "sha256":  "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/RenoDX_ATTRIBUTION.txt",
+                        "sha256":  "e190e5f66cb2a9f1bacf9e94ffe3a109e8691828520dd5cfb2cf34cde3b597e4"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/SafetyHook-Boost-1.0.txt",
+                        "sha256":  "36266a8fd073568394cb81cdb2b124f7fdae2c64c1a7ed09db34b4d22efa2951"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/UEVR-API-MIT.txt",
+                        "sha256":  "cc27a0965f070b29a0cb6bf0b4fd316c869c4cfe5d9a3ac4ce4fdefb60639a55"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/Vulkan-Headers-LICENSE.md",
+                        "sha256":  "f43ba543d73f08f7401d99b697b2b741704eb22b5447a5021fd92b279b297646"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/Zycore-MIT.txt",
+                        "sha256":  "a111d9315012e6cf95bcd0c1660bd1c9b63d4bdfb3edb1a6e904d49605825caf"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/licenses/Zydis-MIT.txt",
+                        "sha256":  "77f4584207ed4f10ca1455dfdd25264687321221692f37761e3c7d62100e3d9e"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/nvngx.dll_dlssg.dll",
+                        "sha256":  "45434d63d72a93b9ce37bc4e4ab56d5cef5d904cfb41af933552a4d7927cfc3b"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/nvngx.dll_dlssnr.dll",
+                        "sha256":  "da7ee4d2c8c686b04bc112c1ab295fbefb65e47821a6a4645b094bf3a67f6787"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/nvngx_dlssg.dll",
+                        "sha256":  "ff6e90eb78b827927dff5b4ecc6b1c870c2e9bca29ed9f48c7d348cc9e170b82"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/ofxr_amd_fidelityfx_framegeneration_dx12.dll",
+                        "sha256":  "12a5081257ec95b0b53ad51b4a87fb3c03f97fe0bbb59f9496968f8d50ef93a6"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/ofxr_bridge.ini",
+                        "sha256":  "860dd1f23a369f4cd90e9862e45db60787c4c88c9074ac3b03e62ce05826765b"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/OFXR_vulkan_queue_layer.dll",
+                        "sha256":  "dd9b537eb3d5c56ae0756df24e39543387c1f5c1d912cf2bca37a48751c106e2"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/PDAFWPlugin.dll",
+                        "sha256":  "5f3cfc38903ac438241a3c47cb4bc3ac329cb39b056e33a63c20045fe15336f9"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr/XR_APILAYER_XRFrameBridge_diagnostic.dll",
+                        "sha256":  "9768dfd3f1dc6b2c8590ab62b93be192599fa0fa9d04b08cc2bd8445ed913f68"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/ofxr_x86/XR_APILAYER_XRFrameBridge_diagnostic.dll",
+                        "sha256":  "3750f1c5564c5ad33f22dbbacdb43546d2f99ebbee018f84c57c699b633115ec"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/OFXRBridgeTray.exe",
+                        "sha256":  "e3128ff39c913ffc34c32c1a42b981e892a87b14a5282ff0f3453828de842e36"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/Profiles/ofxr-bridge.ini",
+                        "sha256":  "ec1dd31b6b4cfa0adf318d1280bde674e6ff860178e6826dc8f91d0052536e11"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/Profiles/Profiles/AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard.exe.ini",
+                        "sha256":  "ec1dd31b6b4cfa0adf318d1280bde674e6ff860178e6826dc8f91d0052536e11"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/check_runtime.py",
+                        "sha256":  "ef78778d6039a546a47dd6a19fba70a4e5667dff1c2394ad9620f341ca9ea784"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/fused_warp.py",
+                        "sha256":  "569e27e51436e8ae1fc53b73969b75e63d1aec6ef61aa760608d3d83667e38fe"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/gpu_memory.py",
+                        "sha256":  "e465d89fc2db79cfee58e8ece24bb2290cb05a897899b798ad68c165aa291cbe"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/LICENSE",
+                        "sha256":  "4ce9c78e38e4ef608e68197769652f21058888301245e00bef110418f4863771"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/__init__.py",
+                        "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_16_lite.py",
+                        "sha256":  "53d81db51f5983a76fc84df4d60012cf88d1822729245d22b862080fbc1d488b"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_25_lite.py",
+                        "sha256":  "af9d14c768234b1f837a74b05432c451de34b3e1a201ff0553195b3ca98bf54c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_3.py",
+                        "sha256":  "18a09b3b4deb6d6b0a80718e9b7698bd64210bf2acee17a9e0fba79536a56c4c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_4.py",
+                        "sha256":  "18a09b3b4deb6d6b0a80718e9b7698bd64210bf2acee17a9e0fba79536a56c4c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/IFNet_HDv3_v4_6.py",
+                        "sha256":  "f50e0b905168ab21f650a7fd13ee00a14b8b380077cd063993fadc631635e5bc"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/models/warplayer.py",
+                        "sha256":  "c3e47da7e968aa71c81cf2ce23c709e157cb5e07eab0f2de49df2a28aa2b1a14"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/overlay-manifest.json",
+                        "sha256":  "3162345b2d7f56920978e7a57b34aecec53a36dfcb288525084cf8e0f7a91ca8"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/runtime_lease.py",
+                        "sha256":  "f844202cdcfe25738eab4cd4a80b5b8ff4188c74fe20398664d8392f0cd03367"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/runtime-lock.json",
+                        "sha256":  "b223caed29a584baa9a96b19071443ceca0c25dd37629223dfe7cc2c27636b7e"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/trt_backend.py",
+                        "sha256":  "27cd9926ee491842a11f47827f60c9f210fb613085e1cd979ce7088179b8371f"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/trt_cache.py",
+                        "sha256":  "3ec3018306fb6640874c816554fdaadbc0732b9533b41d574265f3c478f79eec"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/trt_compile.py",
+                        "sha256":  "6c3dcfb93d4eec3d0b020ef24b5d7d4480a628285a6c79987bcea772e97bebc3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/python/rife/worker.py",
+                        "sha256":  "459110b36a80b38c592f09dbd579eb4952c98580d612d2d0c5a08ae34131f9ef"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/README.md",
+                        "sha256":  "8eac542affeff7eefb172f73b2d7bf4cdd2b602d866d5986effdba19bc975a25"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/dependencies.json",
+                        "sha256":  "212514458a6d90bc4b13f32954d32c86ac32146b57c9df7a1f61f641d19842ff"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/licenses/glslang.txt",
+                        "sha256":  "7d4c1655be3a4d99e8a4859335e28c8950f2e7f72dcf3eed3379846120f5bf47"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/licenses/json.txt",
+                        "sha256":  "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/licenses/ncnn.txt",
+                        "sha256":  "3a066e39806976fe274a042929523c68821c54bcf73369ed61aae2717edd54e8"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/licenses/pnnx.txt",
+                        "sha256":  "3a066e39806976fe274a042929523c68821c54bcf73369ed61aae2717edd54e8"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/manifest.json",
+                        "sha256":  "28c6e167ce4cf282bfc3bde6593aefa5a62d83df74ea5663a62222e2d37b4a44"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/ofxr_rife_vulkan.exe",
+                        "sha256":  "a54888b4c9fd2e8f7daf1fa538a67ef1d660359f93739958b6368447544dc1b3"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/rife-vulkan/pnnx.exe",
+                        "sha256":  "b8c56a0b0319e6ce4d229e9a339e4ee377fb0c42f7f3e66eec235ed00cd71b18"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/scripts/Set-CrashDebug.ps1",
+                        "sha256":  "6d9adb02205f0c0fd471bcb6bd9565803f1bccef4efc63475677a98dceb34eaa"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/SHA256SUMS.txt",
+                        "sha256":  "3a37bb000a7c2da68cec33ac0253f8e67fd109ee0e596b08a88d16f0ffdae01c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/THIRD_PARTY.md",
+                        "sha256":  "bb7db13dc4e132e9e1df1e8ae12c20547c063f816363aa715778ad843ffd5302"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/build_rife_overlay_manifest.py",
+                        "sha256":  "6b6ae3deedfe4ccb35f40afcd8d411a6c251e708a4dc8e99c4bd9bf25b315311"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/Inspect-NrCapture.py",
+                        "sha256":  "d42d343bb7ed7a0c3956124cf733a47e3d65d6c515b9ee0a86c41a502c84383a"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/install_rife_runtime.py",
+                        "sha256":  "3898cb94a3a0bb454a012c53eed38f5c3c1f2db7e21d37072e5c11ca5bc9bcf4"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/install_rife_vulkan.py",
+                        "sha256":  "8304be74bef060caaddc7c5b220bea95e82221bfa977e42c59ae94a0caca8a5d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/precompile_rife.py",
+                        "sha256":  "04401e5937eb558e47b99693994d9e6b303d6fb5f84223848e5e92a4b87edc4c"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/precompile_rife_vulkan.py",
+                        "sha256":  "c9afcf8c620454e244cb9c9696ed09769c19bf4a50d13a18660b85e01ff3b8fc"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/Precompile-Rife.ps1",
+                        "sha256":  "9942c8b8034b05f062167faa2df67d1a4ed9d4c59575e4b5cb1317d9d7b3cdac"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/prepare_rife_runtime.py",
+                        "sha256":  "040b2f79046fe6081f8447806c47dcb98d4cc51409b980efb0e74f2863e65d88"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/concrt140.dll",
+                        "sha256":  "2405355f0a58067b258f8df33c327e3a3d716eaac5a3a5aebb757842d85bd376"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140.dll",
+                        "sha256":  "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_1.dll",
+                        "sha256":  "bfad5aef4c63a669e3c140655cdfdf395b6c979b400a447bd5dcb65ed8826c3d"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_2.dll",
+                        "sha256":  "3ea06f0ee098b4823cb79599df3780e7f23cce52c19aac31d2a0d47efe33a5e9"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_atomic_wait.dll",
+                        "sha256":  "640b2aefced484d0368eea5bdd06addd0658a3a70a49256e560d6923b404a479"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/msvcp140_codecvt_ids.dll",
+                        "sha256":  "f2069a52880ec885ee7f0511186100eb7fada0411a2b4948fafea7735b878a18"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/vccorlib140.dll",
+                        "sha256":  "19839407c3fdbc824e5bce189bf68ddf8097f12ec28b757797ffa0415c144ddd"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/vcruntime140.dll",
+                        "sha256":  "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/vcruntime140_1.dll",
+                        "sha256":  "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/rife-msvc-crt/vcruntime140_threads.dll",
+                        "sha256":  "219915cf20822f34d5e7c1fdd4e21ae7f3396881096c51036225fb8f84b47afa"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/Setup-RifeRuntime.ps1",
+                        "sha256":  "3f72709e947aa41c6815b8ee53cd94f1e56e4ed22408f54567b30412ee0ce5c9"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/test_rife_vulkan.py",
+                        "sha256":  "af487c621d65c570f1fd90a7675c9b008917c55e7013c842ece35f79eb3e14d2"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/Test-RifeVulkan.ps1",
+                        "sha256":  "8f84a65d7db8bf7b4db2f2e6200845c5630b36dbf43c516c4b9fba534606cf02"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/update_rife_overlay.py",
+                        "sha256":  "80b5eacbb9e81b0bba77a22c76120dbeb9e2b84d6e4e16c8acb5cf7c79413e39"
+                    },
+                    {
+                        "path":  "Build/FrameGeneration/tools/vulkan_compile.py",
+                        "sha256":  "049091afcd93790a8fbc85a55e944b3b503d8dadfee7f9276674c8cc0c7f9f23"
+                    },
+                    {
+                        "path":  "Build/HeadsetProjectionPreview/kyty_gpu.construction.dlss.dll",
+                        "sha256":  "f25097e595c188fe48f2f45d7d3f212c21f9b1ad797cf59e76eaa23684cb3332"
+                    },
+                    {
+                        "path":  "Build/HeadsetProjectionPreview/kyty_gpu.diagnostics.dll",
+                        "sha256":  "47beecb25b6903a3a0ddc6d92f263dfa0ad52971aa6c3c438649b1d19f742e8f"
+                    },
+                    {
+                        "path":  "Build/HeadsetProjectionPreview/kyty_gpu.dll",
+                        "sha256":  "a90f607635adebb5a137f45796b21e6c204fcb55704ad4d80c323bb77f6da298"
+                    },
+                    {
+                        "path":  "Build/HeadsetProjectionPreview/kyty_gpu.dlss.dll",
+                        "sha256":  "a90f607635adebb5a137f45796b21e6c204fcb55704ad4d80c323bb77f6da298"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/cursors/drawing.png",
+                        "sha256":  "20ba1a0f689bd75b40e647846785be19beadd677b5ff7312b57f9b300d55dc3b"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/cursors/hand.png",
+                        "sha256":  "62e9a86e27ca129ae36b44b77e1862a1a27e1a5ffd070a4c5284e4d9c8aa8f38"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/images/hidden-trophy.png",
+                        "sha256":  "8875d6e4e9f27e4c62877703cb0f8af91cb3fc2543953c316f11fdf6b88eb69a"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/ar-AE.json",
+                        "sha256":  "7cc5a6a83ca9f1ece1893418386f1f5023a70f4b63e048d683ee8cec53a49169"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/cs-CZ.json",
+                        "sha256":  "59441183da2bd3e95eee0cdaae0798054cadb0bf1efb301c21ce530d93394312"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/da-DK.json",
+                        "sha256":  "6b13e9680f489f7c1f817f276fbb993a738ca25815ee188b37a2aba879a63ab4"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/de-DE.json",
+                        "sha256":  "d676545ada2979513fd381dab14c6dbd66aff50e28dcc39abe83cf3f5088be59"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/el-GR.json",
+                        "sha256":  "adb88b4e8aeefb075a6281621a78b5300d5837a519e67d93e9c9ff212337f0a8"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/en-GB.json",
+                        "sha256":  "cde66ebeb234aab1c176c3cd66e6a64ab774d0b14d15e85c3f8514eeebb63d6c"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/en-US.json",
+                        "sha256":  "cde66ebeb234aab1c176c3cd66e6a64ab774d0b14d15e85c3f8514eeebb63d6c"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/es-419.json",
+                        "sha256":  "951e8f687f8d256d4bed0b387563207a0e5d8a980e72243725e5a70b214c0b3b"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/es-ES.json",
+                        "sha256":  "951e8f687f8d256d4bed0b387563207a0e5d8a980e72243725e5a70b214c0b3b"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/fi-FI.json",
+                        "sha256":  "9b4def49069e9e22ce94820a61d89f430275227b1a1a1f3a68047fe1201a686c"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/fr-CA.json",
+                        "sha256":  "3d1f4dbe48f28c305e038270ec5fa4689db9412dbc0cd8e4207d3c968fd009a0"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/fr-FR.json",
+                        "sha256":  "3d1f4dbe48f28c305e038270ec5fa4689db9412dbc0cd8e4207d3c968fd009a0"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/hu-HU.json",
+                        "sha256":  "0bae1ac4be71762442754ad42b7292c4c5d41ee2f80e5c06c42f556fd367f774"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/id-ID.json",
+                        "sha256":  "d728bfe1ac9c345a594958fb27843fc30c678eaaba5720b21deaa31f4bb69ab8"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/it-IT.json",
+                        "sha256":  "49c754e410e2a83fb444a936badf85426c986a5425cffdd14e86b1fb5a3203ed"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/ja-JP.json",
+                        "sha256":  "43ea9de0d2818adc3922fe90ed159eca8af531ea9affc51940bfc4f8457b8dcf"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/ko-KR.json",
+                        "sha256":  "d19b5c12cb3e0a12630b52f260a7efec107ab2006d5e6c2ff0e98e71bbaf500e"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/nl-NL.json",
+                        "sha256":  "088dc878270a6314304bab78c1dcc0aa9564cbc6e733bf6350c4dd949fd4ab6c"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/no-NO.json",
+                        "sha256":  "ecefe3196169856a0747f859f5d5c8353c9539708f9891987c1461fc705b8562"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/pl-PL.json",
+                        "sha256":  "8995a5e3e1a2b08f6c3b6fc0da24d46a8f57f81c4fe46f8cfbcc181369c15cc3"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/pt-BR.json",
+                        "sha256":  "3e58c3afec9cab0c7ac91a084b27d819e9d7dd2db6e02bdc49caf47a8703753d"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/pt-PT.json",
+                        "sha256":  "3e58c3afec9cab0c7ac91a084b27d819e9d7dd2db6e02bdc49caf47a8703753d"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/ro-RO.json",
+                        "sha256":  "6ec99bd4e3d4707eb75e6c8857c8614d9b5c46f05dae65d13a95e5fec72a66e4"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/ru-RU.json",
+                        "sha256":  "f93e9fe4c50fc249ec1938de1cc67ef8ae04f16ca341890f2d935a750814487d"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/sv-SE.json",
+                        "sha256":  "83ecac3e2eec1e0b82dd703f4ba3b7a29e9a56202ae37ef02dfed6e553c96bf0"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/th-TH.json",
+                        "sha256":  "d75e9b6a0f4317814f9d11f67fd065dccb2408896fbe2ca9c86d6651f8700983"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/tr-TR.json",
+                        "sha256":  "ea95d2c2a4fd1d27576d1cb8a1fb368f32a24d1cf4c6ee9582923d0c0bb0ed4c"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/vi-VN.json",
+                        "sha256":  "f75267d3b69454a24453d6f7ee43c5c12224e64168c81824e59ccadfae64afb7"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/zh-Hans.json",
+                        "sha256":  "f801134bbaffc32b134b3e43a18fe6b421dbec1c89791b84d3ca8b962d737189"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/localization/zh-Hant.json",
+                        "sha256":  "6bbaf7ad8e7b93673055b2736d23890d794957cb1c2d3f074e9180e4377db760"
+                    },
+                    {
+                        "path":  "Build/RunHybrid/assets/sounds/trophy-unlock.wav",
+                        "sha256":  "99f45c458ed7895c61d2fe18c3408005ae3832749ba3afa7e3361ddb879e01c7"
+                    },
+                    {
+                        "path":  "BUILDING.md",
+                        "sha256":  "f65172e223acdcb869fd090cab33244a87171c8374e0de842c0172f6d9c8a4ca"
+                    },
+                    {
+                        "path":  "Check Conversion.bat",
+                        "sha256":  "97ca33b697747a7bd75d0c66aa6d4e6d1b652253122c1447f87ecd09e2728ee1"
+                    },
+                    {
+                        "path":  "Check-Conversion.ps1",
+                        "sha256":  "d7f96f1a282cc7b671f2e8715e1f8f185118a8a47926ea333ed941f68ae9fd4e"
+                    },
+                    {
+                        "path":  "Install VR.bat",
+                        "sha256":  "3baa9a2c5caf6a0cffb4d84329295402affa73ee8c7338f6788128a77cd68ef0"
+                    },
+                    {
+                        "path":  "Install-HudLayout.ps1",
+                        "sha256":  "83ebd2c180798d98c25b10f46bd354c94d1fb94c0827d38d72ee12a3082ff28b"
+                    },
+                    {
+                        "path":  "Install-VR.ps1",
+                        "sha256":  "38f35b01fed37e4749d8d06ba81d55b4309778a7e2a2de404f7c84c2af732597"
+                    },
+                    {
+                        "path":  "LICENSE",
+                        "sha256":  "11c4a8b414a534365f02da7dad9dc3e471d35b15ed31df9d4006fb2a144c4443"
+                    },
+                    {
+                        "path":  "Play AstroHybrid VR - Launcher.bat",
+                        "sha256":  "ae616e840d2d9d94471b16015dc7f164fe5b825c6871d36f24b2be7dd658d448"
+                    },
+                    {
+                        "path":  "Play AstroHybrid VR.bat",
+                        "sha256":  "19dd44d2c280a1ebdb42afcf4e41ec3f51bfec2ffcdefc3904b6aafccdc99302"
+                    },
+                    {
+                        "path":  "README.md",
+                        "sha256":  "e3477d1d1dbf43fa34ed7bd863e0d6b9d4aa4e416b7cf2c18709f05c6af79b0f"
+                    },
+                    {
+                        "path":  "VR-support/libSceVideoOut.prx",
+                        "sha256":  "1f3dfd8eb1a7d742c9d6ba1c62e9d278abfecd4cd39c26e59700ad4af5fa381f"
+                    }
+                ]
 }
