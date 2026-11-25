@@ -3188,7 +3188,7 @@ index cb883de2..219e3bc8 100644
  		}
  		if (breadcrumbs) {
 diff --git a/src/graphics/host_gpu/renderer/dlss.cpp b/src/graphics/host_gpu/renderer/dlss.cpp
-index d43372e6..21dffaa8 100644
+index d43372e6..8ee531c0 100644
 --- a/src/graphics/host_gpu/renderer/dlss.cpp
 +++ b/src/graphics/host_gpu/renderer/dlss.cpp
 @@ -30,6 +30,9 @@
@@ -3410,7 +3410,7 @@ index d43372e6..21dffaa8 100644
 +		if (candidate.feature != nullptr && candidate.out_w == out_w && candidate.out_h == out_h) {
 +			slot = &candidate;
 +			break;
- 		}
++		}
 +	}
 +	if (slot != nullptr && (in_w > slot->in_w || in_h > slot->in_h)) {
 +		retire(*slot);
@@ -3430,7 +3430,7 @@ index d43372e6..21dffaa8 100644
 +				}
 +			}
 +			retire(*slot);
-+		}
+ 		}
 +	}
 +	if (slot->feature == nullptr) {
 +		const uint32_t max_w = std::max(in_w, out_w);
@@ -3574,7 +3574,7 @@ index d43372e6..21dffaa8 100644
  	if (NVSDK_NGX_FAILED(result)) {
  		static std::atomic<uint32_t> logged {0};
  		if (logged.fetch_add(1) < 8) {
-@@ -616,6 +745,7 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
+@@ -616,10 +745,80 @@ bool RenderExecutor::TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pix
  	// The output now holds DLSS's image: a GPU write of the target, as the draw's would be.
  	out.NoteContentWrite();
  	cache.CommitGpuWrite(out);
@@ -3582,6 +3582,79 @@ index d43372e6..21dffaa8 100644
  	s.evaluations++;
  	Summary(s);
  	return true;
+ #endif
+ }
+ 
++bool RenderExecutor::TryNativeTemporalResolve(CommandBuffer& buffer, PreparedBindings& pixel,
++                                              ImageId output) {
++	static const bool enabled = [] {
++		const char* vr = std::getenv("ASTROHYBRID_VR");
++		if (vr == nullptr || std::strcmp(vr, "1") != 0) {
++			return false;
++		}
++		const char* opt = std::getenv("KYTY_VR_NATIVE_RESOLVE_BLIT");
++		return opt == nullptr || std::strcmp(opt, "0") != 0;
++	}();
++	if (!enabled || Dlss::Requested() || pixel.runtime == nullptr || !*pixel.runtime) {
++		return false;
++	}
++	if (pixel.runtime->program->shader_hash != 0x2936e5eca99d75e7ULL) {
++		return false;
++	}
++	if (pixel.images.size() < 2 || !output) {
++		return false;
++	}
++	auto&      cache    = m_context.GetTextureCache();
++	const auto color_id = pixel.images[1].image_id;
++	if (!color_id || color_id == output || !cache.m_slot_images.try_get(color_id) ||
++	    !cache.m_slot_images.try_get(output)) {
++		return false;
++	}
++	auto& color = cache.GetImage(color_id);
++	auto& out   = cache.GetImage(output);
++	if (!color.backing.image || !out.backing.image || color.info.samples != 1 ||
++	    out.info.samples != 1 || color.info.extent.width == 0 || color.info.extent.height == 0 ||
++	    out.info.extent.width == 0 || out.info.extent.height == 0) {
++		return false;
++	}
++	buffer.EndRendering();
++	const auto cmd = buffer.Handle();
++	color.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
++	              cmd);
++	out.Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, cmd);
++	if (color.info.extent.width == out.info.extent.width &&
++	    color.info.extent.height == out.info.extent.height &&
++	    color.backing.format == out.backing.format) {
++		vk::ImageCopy copy {};
++		copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
++		copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
++		copy.extent         = {out.info.extent.width, out.info.extent.height, 1};
++		cmd.copyImage(color.backing.image, vk::ImageLayout::eTransferSrcOptimal, out.backing.image,
++		              vk::ImageLayout::eTransferDstOptimal, 1, &copy);
++	} else {
++		vk::ImageBlit blit {};
++		blit.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
++		blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
++		blit.srcOffsets[1]  = {static_cast<int32_t>(color.info.extent.width),
++		                       static_cast<int32_t>(color.info.extent.height), 1};
++		blit.dstOffsets[1]  = {static_cast<int32_t>(out.info.extent.width),
++		                       static_cast<int32_t>(out.info.extent.height), 1};
++		cmd.blitImage(color.backing.image, vk::ImageLayout::eTransferSrcOptimal, out.backing.image,
++		              vk::ImageLayout::eTransferDstOptimal, 1, &blit, vk::Filter::eLinear);
++	}
++	out.NoteContentWrite();
++	cache.CommitGpuWrite(out);
++	static std::atomic<uint32_t> logged {0};
++	if (logged.fetch_add(1, std::memory_order_relaxed) < 2) {
++		std::printf("VR native resolve (eye %d): %ux%u -> %ux%u via transfer blit\n",
++		            Vr::CameraRenderEye(), color.info.extent.width, color.info.extent.height,
++		            out.info.extent.width, out.info.extent.height);
++		std::fflush(stdout);
++	}
++	return true;
++}
++
+ } // namespace Libs::Graphics
 diff --git a/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp b/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
 index 45a7df72..1cfda621 100644
 --- a/src/graphics/host_gpu/renderer/drawPrep/bindingPlan.cpp
@@ -6331,7 +6404,7 @@ index 06e738e9..2c923ef1 100644
  		entry.view = view;
  	}
 diff --git a/src/graphics/host_gpu/renderer/render.h b/src/graphics/host_gpu/renderer/render.h
-index ded9d461..3a223daf 100644
+index ded9d461..8564b7e8 100644
 --- a/src/graphics/host_gpu/renderer/render.h
 +++ b/src/graphics/host_gpu/renderer/render.h
 @@ -7,6 +7,7 @@
@@ -6567,7 +6640,16 @@ index ded9d461..3a223daf 100644
  
  private:
  	void DrawIndex(uint64_t submit_id, CommandBuffer& buffer, const DrawIndexArgs& args);
-@@ -1222,6 +1297,7 @@ private:
+@@ -1187,6 +1262,8 @@ private:
+ 	void NoteDlssTargets(std::span<const RenderColorInfo> colors, ImageId depth);
+ 	[[nodiscard]] bool TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pixel,
+ 	                                  ImageId output);
++	[[nodiscard]] bool TryNativeTemporalResolve(CommandBuffer& buffer, PreparedBindings& pixel,
++	                                            ImageId output);
+ 	// ASTROHYBRID_DLSSG (frameGen.h): the camera from a draw's bound constants, and the frame's
+ 	// depth, motion vectors and constants at the temporal upscale pass.
+ 	void NoteFrameGenCamera(const PreparedBindings& stage);
+@@ -1222,6 +1299,7 @@ private:
  	// Reused by every draw (all draws hold the render mutex); DrawRenderState::Reset restores
  	// only what the previous draw changed. Owns the draw's per-stage program preparation.
  	std::unique_ptr<DrawRenderState>      m_draw_state;
@@ -6575,7 +6657,7 @@ index ded9d461..3a223daf 100644
  	// Program preparation output of the current dispatch; its stage runtime points here.
  	PipelineCache::StagePrep              m_compute_prep;
  	// KYTY_LDS_DEVICE_BUFFER: device-local buffer of compute LDS regions (BindComputeLds), grown
-@@ -1233,10 +1309,19 @@ private:
+@@ -1233,10 +1311,19 @@ private:
  	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
  	std::vector<uint32_t>                 m_image_occurrences;
  	struct ShaderUploadEntry {
@@ -6598,7 +6680,7 @@ index ded9d461..3a223daf 100644
  	};
  	std::array<ShaderUploadEntry, 64> m_shader_uploads;
  	// KYTY_UPLOAD_DEDUP: same-tick content dedup of shader-data/flattened-SRT uploads. By default
-@@ -1353,6 +1438,11 @@ private:
+@@ -1353,6 +1440,11 @@ private:
  	// Draw-prep (drawPrep.h): the preparation of the draw the engine is committing, taken by
  	// RefreshShaders in place of GetGraphicsPrograms when its certificate holds. Null otherwise.
  	DrawPrep::PreparedDraw* m_prepared_draw = nullptr;
@@ -6610,7 +6692,7 @@ index ded9d461..3a223daf 100644
  	// KYTY_DRAW_PREP_DISPATCH: the preparation of the dispatch the engine is executing, taken by
  	// DispatchDirect in place of GetComputeProgram when its certificate holds. Null otherwise.
  	DrawPrep::PreparedDraw* m_prepared_dispatch = nullptr;
-@@ -1506,6 +1596,7 @@ private:
+@@ -1506,6 +1598,7 @@ private:
  	}
  	std::array<DrawRunRecord, 32> m_run_kept;
  	uint32_t                     m_run_kept_next = 0;
@@ -6618,7 +6700,7 @@ index ded9d461..3a223daf 100644
  	bool                         m_run_recall    = false;
  	bool                         m_run_keepable  = false;
  	bool          m_run_prev_valid     = false; // m_run.valid when the committed draw began
-@@ -1520,6 +1611,16 @@ private:
+@@ -1520,6 +1613,16 @@ private:
  	[[nodiscard]] static bool DrawRunPipeSwapCompatible(
  	    const ShaderRecompiler::IR::CompiledShaderInfo& recorded,
  	    const ShaderRecompiler::IR::CompiledShaderInfo& program);
@@ -7149,7 +7231,7 @@ index 8d87a367..4953720e 100644
  	RenderExecutor            m_render_executor;
  	CommandScheduler          m_command_scheduler;
 diff --git a/src/graphics/host_gpu/renderer/renderDraw.cpp b/src/graphics/host_gpu/renderer/renderDraw.cpp
-index 25b4d339..ec3570a2 100644
+index 25b4d339..fc4c3bfb 100644
 --- a/src/graphics/host_gpu/renderer/renderDraw.cpp
 +++ b/src/graphics/host_gpu/renderer/renderDraw.cpp
 @@ -38,6 +38,7 @@
@@ -7522,7 +7604,23 @@ index 25b4d339..ec3570a2 100644
  	// ASTROHYBRID_DLSS (dlss.h): depth attachments by colour target, and the game's temporal
  	// upscale replaced by DLSS Super Resolution. A replaced draw records nothing else; like a
  	// skipped one (KYTY_PIPELINE_SKIP below) no run record may be continued across it.
-@@ -4194,7 +4281,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4183,6 +4270,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+ 			}
+ 			return;
+ 		}
++	} else if (state.ps_active && bindings.pixel.has_value() && state.color_count != 0 &&
++	           TryNativeTemporalResolve(buffer, *bindings.pixel, state.color_info[0].image_id)) {
++		m_run.valid        = false;
++		m_run_active       = false;
++		m_run_targets_kept = false;
++		for (auto& record: m_run_kept) {
++			record.valid = false;
++		}
++		return;
+ 	}
+ 
+ 	// KYTY_LOD_STATS_PLAIN_VARIANT: without a mip-statistics counter on any image the pixel
+@@ -4194,7 +4290,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	if (state.ps_active && bindings.pixel.has_value()) {
  		const auto plain_mode = LodStatsCounter::PlainVariant();
  		const auto plain      = plain_mode != LodStatsCounter::Plain::Off
@@ -7531,7 +7629,7 @@ index 25b4d339..ec3570a2 100644
  		                            : ShaderProgram {};
  		if (plain) {
  			if (bindings.pixel->mip_stats_active) {
-@@ -4368,6 +4455,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4368,6 +4464,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  		}
  	}
  	CommitStats::StepMark(CommitStats::Step::BarrierSafe);
@@ -7539,7 +7637,7 @@ index 25b4d339..ec3570a2 100644
  	const CommandBuffer::DrawScope draw_scope(buffer, barrier_safe);
  	// Emission safe point (KYTY_CP_RECORDER): no native handle obtained during the preparation above
  	// is alive; from here the draw's commands go to the recorder (render.h, CommandBuffer::Sink).
-@@ -4439,7 +4527,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4439,7 +4536,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	                         (!m_context.GetGraphics().attachment_feedback_loop_enabled ||
  	                          (m_dynamic_state.feedback_valid && !m_dynamic_state.feedback));
  	if (m_run_active && !run_dynamic) {
@@ -7548,7 +7646,7 @@ index 25b4d339..ec3570a2 100644
  	}
  	const auto run_dynamic_emitted = g_dynamic_state_emitted;
  	if (!(m_run_active && run_dynamic)) {
-@@ -4870,7 +4958,10 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
+@@ -4870,7 +4967,10 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
  	// separately timed preparation/execution phases.
  	KYTY_PROFILER_DETAIL_BLOCK("Draw::SetupAndExecution");
  	CommitStats::StepMark(CommitStats::Step::DebugInfo);
@@ -7560,7 +7658,7 @@ index 25b4d339..ec3570a2 100644
  	CommitStats::StepMark(CommitStats::Step::Lock);
  	// KYTY_DRAW_RUN: only a draw that records through the eligible path seeds the next continuation.
  	BeginDrawRun();
-@@ -4954,7 +5045,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
+@@ -4954,7 +5054,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
  	const bool primitive_restart = ResolvePrimitiveRestart(buffer, index_source,
  	    MeshRestartEnabled() && state.vertex_info[0].stage.program->stage == ShaderType::Mesh);
  
@@ -7570,7 +7668,7 @@ index 25b4d339..ec3570a2 100644
  	if (index_source.guest_element_size == 1) {
  		EXIT_NOT_IMPLEMENTED(args.index_addr == nullptr);
  		const auto* src = static_cast<const uint8_t*>(args.index_addr);
-@@ -5023,7 +5115,10 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
+@@ -5023,7 +5124,10 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
  
  	KYTY_PROFILER_DETAIL_BLOCK("Draw::SetupAndExecution");
  	CommitStats::StepMark(CommitStats::Step::DebugInfo);
@@ -7949,7 +8047,7 @@ index a1bd8541..1d4482dc 100644
  	image.allocation = nullptr;
 diff --git a/src/graphics/presentation/astroEyeResolution.h b/src/graphics/presentation/astroEyeResolution.h
 new file mode 100644
-index 00000000..e76c4546
+index 00000000..7849092e
 --- /dev/null
 +++ b/src/graphics/presentation/astroEyeResolution.h
 @@ -0,0 +1,131 @@
@@ -8043,19 +8141,19 @@ index 00000000..e76c4546
 +        const unsigned mainPool = (native5184 || quality6000) ? 4080u : 4000u;
 +        add(0x737c0dc,0x17800000,large ? (native5184 ? 1104u : 896u) * MiB : 0x24000000u);
 +        add(0x737c0e1,0x1d200000,large ? (native5184 ? 1088u : 1216u) * MiB : 0x28000000u);
-+        add(0x2b118f,0x87c00000,large ? mainPool * MiB : 0xa8000000u);
++        bumpMainArena(large ? mainPool * MiB : 0xa8000000u);
 +        if (large) {
 +            const unsigned scratchA = native5184 ? 384u : (quality6000 ? 320u : 416u);
 +            const unsigned scratchB = (native5184 || quality6000) ? 320u : 448u;
 +            add(0x737c0ee,0x0b400000,scratchA * MiB);
 +            add(0x737c0f4,0x0cc00000,scratchB * MiB);
 +        }
-+    } else if (uint64_t(width)*height > 2560ull*2352) {
++    } else {
 +        // The first register drives both allocation and capacity. The smaller
 +        // pool has separate allocation and capacity operands.
-+        // Also bump the second RenderTarget pool (0x1d200000 -> 0x25000000, +126 MiB)
-+        // and the main graphics arena (-> 0xa0000000) so 3200x2944 DLAA with wider
-+        // VR culling does not overflow RenderTarget memory on worldmap/levels.
++        // Always bump the RenderTarget pools and main graphics arena (-> 0xa0000000)
++        // for all presets <= 3200 (including 2048 and 2560) so the +48 MiB DCB bump
++        // and VR culling never overflow the default 0x87c00000 arena at boot.
 +        add(0x737c0dc,0x17800000,0x1c000000);
 +        add(0x737c0e1,0x1d200000,0x25000000);
 +        add(0x737c19f,0x01000000,0x02400000);
@@ -9510,7 +9608,7 @@ index 3f17232a..e71212c8 100644
  		    Config::GetPrintfDirection() != Config::LogDirection::Silent) {
 diff --git a/src/graphics/presentation/vrCulling.h b/src/graphics/presentation/vrCulling.h
 new file mode 100644
-index 00000000..9bb4b6ac
+index 00000000..2508f96a
 --- /dev/null
 +++ b/src/graphics/presentation/vrCulling.h
 @@ -0,0 +1,461 @@
@@ -9550,7 +9648,7 @@ index 00000000..9bb4b6ac
 +inline float CullMarginRadians() {
 +	static const float rad = [] {
 +		const char* v = std::getenv("KYTY_VR_CULL_MARGIN_DEG");
-+		const float deg = v ? std::clamp(std::strtof(v, nullptr), 0.0f, 45.0f) : 3.0f;
++		const float deg = v ? std::clamp(std::strtof(v, nullptr), 0.0f, 45.0f) : 6.0f;
 +		return deg * 0.017453292519943295f;
 +	}();
 +	return rad;
@@ -9559,8 +9657,8 @@ index 00000000..9bb4b6ac
 +inline float CullPullbackMeters() {
 +	static const float pullback = [] {
 +		const char* v = std::getenv("KYTY_VR_CULL_PULLBACK");
-+		const float m = v ? std::clamp(std::strtof(v, nullptr), 0.0f, 3.0f) : 0.06f;
-+		return std::isfinite(m) ? m : 0.06f;
++		const float m = v ? std::clamp(std::strtof(v, nullptr), 0.0f, 3.0f) : 0.15f;
++		return std::isfinite(m) ? m : 0.15f;
 +	}();
 +	return pullback;
 +}

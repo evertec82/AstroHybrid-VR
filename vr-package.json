@@ -1,5 +1,5 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "base_runtime": "AstroHybrid 1.2.1",
   "game": {
     "title_id": "PPSA21567",
@@ -825,11 +825,11 @@
     },
     {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.dll",
-      "sha256": "b5b62fa6d4c9582074cb926db9c40e462477ce5424ebe3fb856eb369a024e6b8"
+      "sha256": "66ffe073b62522ecf4da06ad5697d764644bdde458ce2c2468399e72f3c5ad06"
     },
     {
       "path": "Build/HeadsetProjectionPreview/kyty_gpu.dlss.dll",
-      "sha256": "b5b62fa6d4c9582074cb926db9c40e462477ce5424ebe3fb856eb369a024e6b8"
+      "sha256": "66ffe073b62522ecf4da06ad5697d764644bdde458ce2c2468399e72f3c5ad06"
     },
     {
       "path": "Build/RunHybrid/assets/cursors/drawing.png",
@@ -997,11 +997,11 @@
     },
     {
       "path": "Play AstroHybrid VR.bat",
-      "sha256": "b50e60009170d6a4afc11bfb1c971c9a0b24cfa626a57310eb481885591d0841"
+      "sha256": "19dd44d2c280a1ebdb42afcf4e41ec3f51bfec2ffcdefc3904b6aafccdc99302"
     },
     {
       "path": "README.md",
-      "sha256": "a0de3ff8754d58d15800ea086cd9a8d5d0bc5ef06c532a61b0477608009759a9"
+      "sha256": "ec9ded6547bfa679c665f0f09ff03e4bea321ef6f52a8b61f90fba153d0f81b7"
     },
     {
       "path": "VR-support/libSceVideoOut.prx",
