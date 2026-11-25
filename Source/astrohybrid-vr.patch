@@ -146,8 +146,1206 @@ index 00000000..349e4839
 +	uint64_t last_ns = 0;
 +};
 +} // namespace Common
+diff --git a/src/common/hostGpuWindows.cpp b/src/common/hostGpuWindows.cpp
+new file mode 100644
+index 00000000..138d5235
+--- /dev/null
++++ b/src/common/hostGpuWindows.cpp
+@@ -0,0 +1,1055 @@
++#include "common/hostGpuWindows.h"
++
++#include "common/config.h"
++
++#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
++
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h> // IWYU pragma: keep
++// clang-format off
++#include <dxgi1_4.h>
++#include <pdh.h>
++#include <pdhmsg.h>
++// clang-format on
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdio>
++#include <cstring>
++#include <cwchar>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++namespace Common {
++
++namespace {
++
++// ---------------------------------------------------------------------------------------------
++// The renderer's adapter (SetHostGpuAdapter).
++
++struct AdapterChoice {
++	bool        has_luid = false;
++	LUID        luid {};
++	std::string name;
++	uint32_t    vendor_id  = 0;
++	uint32_t    device_id  = 0;
++	bool        integrated = false;
++	bool        known      = false; // Set by the renderer (integrated is meaningful).
++	uint64_t    revision   = 0;
++};
++
++std::mutex    g_adapter_mutex;
++AdapterChoice g_adapter;
++
++AdapterChoice CurrentAdapter() {
++	std::scoped_lock lock(g_adapter_mutex);
++	return g_adapter;
++}
++
++bool SameLuid(const LUID& a, const LUID& b) {
++	return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
++}
++
++const char* VendorName(uint32_t vendor_id) {
++	switch (vendor_id) {
++		case 0x8086: return "Intel";
++		case 0x10DE: return "NVIDIA";
++		case 0x1002:
++		case 0x1022: return "AMD";
++		default: return "";
++	}
++}
++
++std::string Utf8(const wchar_t* text) {
++	if (text == nullptr || text[0] == L'\0') {
++		return {};
++	}
++	const int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
++	if (size <= 1) {
++		return {};
++	}
++	std::string result(static_cast<size_t>(size), '\0');
++	WideCharToMultiByte(CP_UTF8, 0, text, -1, result.data(), size, nullptr, nullptr);
++	result.resize(static_cast<size_t>(size) - 1);
++	return result;
++}
++
++std::string Lower(std::string text) {
++	std::transform(text.begin(), text.end(), text.begin(), [](char c) {
++		return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
++	});
++	return text;
++}
++
++template <typename T>
++bool Resolve(HMODULE module, const char* name, T& function) {
++	function = module != nullptr
++	               ? reinterpret_cast<T>(reinterpret_cast<void*>(GetProcAddress(module, name)))
++	               : nullptr;
++	return function != nullptr;
++}
++
++// ---------------------------------------------------------------------------------------------
++// DXGI: names, memory sizes and driver versions of every adapter (read once).
++
++struct DxgiAdapter {
++	LUID        luid {};
++	std::string name;
++	uint32_t    vendor_id = 0;
++	uint32_t    device_id = 0;
++	uint64_t    dedicated = 0; // DedicatedVideoMemory
++	uint64_t    shared    = 0; // SharedSystemMemory
++	std::string driver;
++	bool        software = false;
++};
++
++const std::vector<DxgiAdapter>& DxgiAdapters() {
++	static const std::vector<DxgiAdapter> adapters = [] {
++		std::vector<DxgiAdapter> result;
++		auto* module = LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++		using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
++		CreateFactory create = nullptr;
++		if (!Resolve(module, "CreateDXGIFactory1", create)) {
++			return result;
++		}
++		IDXGIFactory1* factory = nullptr;
++		if (FAILED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))) ||
++		    factory == nullptr) {
++			return result;
++		}
++		for (UINT index = 0;; index++) {
++			IDXGIAdapter1* adapter = nullptr;
++			if (factory->EnumAdapters1(index, &adapter) != S_OK || adapter == nullptr) {
++				break;
++			}
++			DXGI_ADAPTER_DESC1 desc {};
++			if (SUCCEEDED(adapter->GetDesc1(&desc))) {
++				DxgiAdapter entry;
++				entry.luid      = desc.AdapterLuid;
++				entry.name      = Utf8(desc.Description);
++				entry.vendor_id = desc.VendorId;
++				entry.device_id = desc.DeviceId;
++				entry.dedicated = desc.DedicatedVideoMemory;
++				entry.shared    = desc.SharedSystemMemory;
++				entry.software  = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
++				// The user-mode driver version, as the Display adapter properties show it.
++				LARGE_INTEGER umd {};
++				if (SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
++					char text[48];
++					std::snprintf(text, sizeof(text), "%u.%u.%u.%u",
++					              static_cast<unsigned>(static_cast<uint32_t>(umd.HighPart) >> 16u),
++					              static_cast<unsigned>(static_cast<uint32_t>(umd.HighPart) & 0xffffu),
++					              static_cast<unsigned>(umd.LowPart >> 16u),
++					              static_cast<unsigned>(umd.LowPart & 0xffffu));
++					entry.driver = text;
++				}
++				result.push_back(std::move(entry));
++			}
++			adapter->Release();
++		}
++		factory->Release();
++		return result;
++	}();
++	return adapters;
++}
++
++const DxgiAdapter* FindDxgi(const LUID& luid) {
++	for (const auto& adapter: DxgiAdapters()) {
++		if (SameLuid(adapter.luid, luid)) {
++			return &adapter;
++		}
++	}
++	return nullptr;
++}
++
++// ---------------------------------------------------------------------------------------------
++// PDH: the "GPU Engine" and GPU memory counters (English names, so any Windows language works).
++
++struct PdhApi {
++	decltype(&PdhOpenQueryW)                open_query  = nullptr;
++	decltype(&PdhAddEnglishCounterW)        add_counter = nullptr;
++	decltype(&PdhCollectQueryData)          collect     = nullptr;
++	decltype(&PdhGetFormattedCounterArrayW) get_array   = nullptr;
++	decltype(&PdhCloseQuery)                close_query = nullptr;
++	bool                                    ready       = false;
++};
++
++const PdhApi& Pdh() {
++	static const PdhApi api = [] {
++		PdhApi result;
++		auto*  module = LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++		result.ready  = Resolve(module, "PdhOpenQueryW", result.open_query) &&
++		               Resolve(module, "PdhAddEnglishCounterW", result.add_counter) &&
++		               Resolve(module, "PdhCollectQueryData", result.collect) &&
++		               Resolve(module, "PdhGetFormattedCounterArrayW", result.get_array) &&
++		               Resolve(module, "PdhCloseQuery", result.close_query);
++		return result;
++	}();
++	return api;
++}
++
++// Parsed instance names: "pid_1234_luid_0x00000000_0x00011949_phys_0_eng_3_engtype_3D" (GPU
++// Engine), "luid_0x00000000_0x00011949_phys_0" (GPU Adapter Memory), "pid_1234_luid_..._phys_0"
++// (GPU Process Memory).
++struct Instance {
++	bool        has_pid = false;
++	uint32_t    pid     = 0;
++	LUID        luid {};
++	uint32_t    phys   = 0;
++	uint32_t    engine = 0;
++	std::string type; // Lower case.
++};
++
++bool ParseInstance(const wchar_t* name, Instance& out) {
++	if (name == nullptr) {
++		return false;
++	}
++	if (const auto* pid = std::wcsstr(name, L"pid_"); pid != nullptr) {
++		out.has_pid = true;
++		out.pid     = static_cast<uint32_t>(std::wcstoul(pid + 4, nullptr, 10));
++	}
++	const auto* luid = std::wcsstr(name, L"luid_0x");
++	if (luid == nullptr) {
++		return false;
++	}
++	wchar_t*   end  = nullptr;
++	const auto high = std::wcstoul(luid + 7, &end, 16);
++	if (end == nullptr || std::wcsncmp(end, L"_0x", 3) != 0) {
++		return false;
++	}
++	const auto low     = std::wcstoul(end + 3, &end, 16);
++	out.luid.HighPart = static_cast<LONG>(high);
++	out.luid.LowPart  = static_cast<DWORD>(low);
++	if (const auto* phys = std::wcsstr(end, L"phys_"); phys != nullptr) {
++		out.phys = static_cast<uint32_t>(std::wcstoul(phys + 5, nullptr, 10));
++	}
++	if (const auto* engine = std::wcsstr(end, L"_eng_"); engine != nullptr) {
++		out.engine = static_cast<uint32_t>(std::wcstoul(engine + 5, nullptr, 10));
++	}
++	if (const auto* type = std::wcsstr(end, L"engtype_"); type != nullptr) {
++		out.type = Lower(Utf8(type + 8));
++	}
++	return true;
++}
++
++enum class EngineKind { Other, ThreeD, Compute, Copy, Video };
++
++EngineKind KindOf(const std::string& type) {
++	if (type.find("3d") != std::string::npos) {
++		return EngineKind::ThreeD;
++	}
++	if (type.find("compute") != std::string::npos) {
++		return EngineKind::Compute;
++	}
++	if (type.find("copy") != std::string::npos) {
++		return EngineKind::Copy;
++	}
++	if (type.find("video") != std::string::npos) {
++		return EngineKind::Video;
++	}
++	return EngineKind::Other;
++}
++
++// Every instance of a wildcard counter with valid data.
++template <typename F>
++void ForEachInstance(PDH_HCOUNTER counter, DWORD format, std::vector<std::byte>& buffer, F&& visit) {
++	const auto& pdh = Pdh();
++	if (counter == nullptr) {
++		return;
++	}
++	for (int attempt = 0; attempt < 3; attempt++) {
++		DWORD size  = 0;
++		DWORD count = 0;
++		auto  status = pdh.get_array(counter, format, &size, &count, nullptr);
++		if (status != static_cast<PDH_STATUS>(PDH_MORE_DATA) || size == 0) {
++			return;
++		}
++		buffer.resize(size);
++		auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buffer.data());
++		status      = pdh.get_array(counter, format, &size, &count, items);
++		if (status == static_cast<PDH_STATUS>(PDH_MORE_DATA)) {
++			continue; // Instances appeared in between.
++		}
++		if (status != ERROR_SUCCESS) {
++			return;
++		}
++		for (DWORD i = 0; i < count; i++) {
++			const auto& value = items[i].FmtValue;
++			if (value.CStatus == PDH_CSTATUS_VALID_DATA || value.CStatus == PDH_CSTATUS_NEW_DATA) {
++				visit(items[i].szName, value);
++			}
++		}
++		return;
++	}
++}
++
++// ---------------------------------------------------------------------------------------------
++// Intel Graphics Control Library (ControlLib.dll from the Intel driver). Only the few entry points
++// and structures used here are declared, laid out as the public IGCL 1.1 interface defines them.
++
++namespace Igcl {
++
++struct ApplicationId {
++	uint32_t data1;
++	uint16_t data2;
++	uint16_t data3;
++	uint8_t  data4[8];
++};
++
++struct InitArgs {
++	uint32_t      size;
++	uint8_t       version;
++	uint32_t      app_version;
++	uint32_t      flags; // 0: no Level Zero; power telemetry works without it.
++	uint32_t      supported_version;
++	ApplicationId application_uid;
++};
++static_assert(sizeof(InitArgs) == 36);
++
++struct DeviceProperties {
++	uint32_t size;
++	uint8_t  version;
++	void*    device_id; // LUID on Windows
++	uint32_t device_id_size;
++	int32_t  device_type; // 1 = graphics
++	uint32_t supported_functions;
++	uint64_t driver_version;
++	uint64_t firmware_version[3];
++	uint32_t pci_vendor_id;
++	uint32_t pci_device_id;
++	uint32_t rev_id;
++	uint32_t eus_per_sub_slice;
++	uint32_t sub_slices_per_slice;
++	uint32_t slices;
++	char     name[100];
++	uint32_t adapter_flags; // bit 0: integrated
++	uint32_t frequency;     // MHz
++	uint16_t subsys_id;
++	uint16_t subsys_vendor_id;
++	uint8_t  bdf[3];
++	uint32_t xe_cores; // version > 2
++	char     reserved[108];
++};
++static_assert(offsetof(DeviceProperties, name) == 88);
++static_assert(offsetof(DeviceProperties, xe_cores) == 204);
++static_assert(sizeof(DeviceProperties) == 320);
++
++struct TelemetryItem {
++	bool    supported;
++	int32_t units;
++	int32_t type;
++	union {
++		int8_t   i8;
++		uint8_t  u8;
++		int16_t  i16;
++		uint16_t u16;
++		int32_t  i32;
++		uint32_t u32;
++		int64_t  i64;
++		uint64_t u64;
++		float    f32;
++		double   f64;
++	} value;
++};
++static_assert(sizeof(TelemetryItem) == 24);
++
++struct PsuInfo {
++	bool          supported;
++	int32_t       type;
++	TelemetryItem energy;
++	TelemetryItem voltage;
++};
++
++struct PowerTelemetry {
++	uint32_t      size;
++	uint8_t       version;
++	TelemetryItem time_stamp; // s
++	TelemetryItem gpu_energy; // J, monotonic
++	TelemetryItem gpu_voltage;
++	TelemetryItem gpu_clock;       // MHz
++	TelemetryItem gpu_temperature; // C
++	TelemetryItem global_activity; // s busy, monotonic
++	TelemetryItem render_compute_activity;
++	TelemetryItem media_activity;
++	bool          gpu_power_limited;
++	bool          gpu_temperature_limited;
++	bool          gpu_current_limited;
++	bool          gpu_voltage_limited;
++	bool          gpu_utilization_limited;
++	TelemetryItem vram_energy;
++	TelemetryItem vram_voltage;
++	TelemetryItem vram_clock;
++	TelemetryItem vram_effective_clock;
++	TelemetryItem vram_read_counter;
++	TelemetryItem vram_write_counter;
++	TelemetryItem vram_temperature;
++	bool          vram_limited[5];
++	TelemetryItem total_card_energy;
++	PsuInfo       psu[5];
++	TelemetryItem fan_speed[5];
++	TelemetryItem gpu_vr_temperature;
++	TelemetryItem vram_vr_temperature;
++	TelemetryItem sa_vr_temperature;
++	TelemetryItem gpu_effective_clock;
++	TelemetryItem gpu_over_voltage_percent;
++	TelemetryItem gpu_power_percent;
++	TelemetryItem gpu_temperature_percent;
++	TelemetryItem vram_read_bandwidth;
++	TelemetryItem vram_write_bandwidth;
++};
++static_assert(offsetof(PowerTelemetry, gpu_clock) == 80);
++static_assert(offsetof(PowerTelemetry, vram_energy) == 208);
++static_assert(offsetof(PowerTelemetry, total_card_energy) == 384);
++static_assert(offsetof(PowerTelemetry, fan_speed) == 688);
++static_assert(offsetof(PowerTelemetry, gpu_vr_temperature) == 808);
++static_assert(sizeof(PowerTelemetry) == 1024);
++
++constexpr int32_t UNITS_RPM = 9; // ctl_units_t: fan speeds in RPM (others report percent)
++
++using InitFn          = int32_t(__cdecl*)(InitArgs*, void**);
++using EnumerateFn     = int32_t(__cdecl*)(void*, uint32_t*, void**);
++using PropertiesFn    = int32_t(__cdecl*)(void*, DeviceProperties*);
++using PowerTelemetryFn = int32_t(__cdecl*)(void*, PowerTelemetry*);
++
++std::optional<double> Value(const TelemetryItem& item) {
++	if (!item.supported) {
++		return std::nullopt;
++	}
++	switch (item.type) {
++		case 0: return item.value.i8;
++		case 1: return item.value.u8;
++		case 2: return item.value.i16;
++		case 3: return item.value.u16;
++		case 4: return item.value.i32;
++		case 5: return item.value.u32;
++		case 6: return static_cast<double>(item.value.i64);
++		case 7: return static_cast<double>(item.value.u64);
++		case 8: return item.value.f32;
++		case 9: return item.value.f64;
++		default: return std::nullopt;
++	}
++}
++
++struct Device {
++	void*       handle = nullptr;
++	bool        has_luid = false;
++	LUID        luid {};
++	std::string name;
++	uint32_t    device_id  = 0;
++	uint32_t    xe_cores   = 0;
++	uint32_t    max_mhz    = 0;
++	bool        integrated = false;
++};
++
++struct Library {
++	bool                ready     = false;
++	PowerTelemetryFn    telemetry = nullptr;
++	std::vector<Device> devices;
++	std::mutex          mutex; // Telemetry calls.
++};
++
++// Initialised once per process and kept: the overlay's sampler is recreated whenever the overlay
++// is shown again, and ControlLib's start-up enumerates every adapter.
++Library& Get() {
++	static Library library;
++	static std::once_flag once;
++	std::call_once(once, [] {
++		auto* module = LoadLibraryExW(L"ControlLib.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++		InitFn       init       = nullptr;
++		EnumerateFn  enumerate  = nullptr;
++		PropertiesFn properties = nullptr;
++		if (!Resolve(module, "ctlInit", init) || !Resolve(module, "ctlEnumerateDevices", enumerate) ||
++		    !Resolve(module, "ctlGetDeviceProperties", properties) ||
++		    !Resolve(module, "ctlPowerTelemetryGet", library.telemetry)) {
++			return;
++		}
++		InitArgs args {};
++		args.size        = sizeof(args);
++		args.app_version = (1u << 16u) | 1u; // IGCL 1.1
++		void* api        = nullptr;
++		if (init(&args, &api) != 0 || api == nullptr) {
++			return;
++		}
++		uint32_t count = 0;
++		if (enumerate(api, &count, nullptr) != 0 || count == 0) {
++			return;
++		}
++		std::vector<void*> handles(count);
++		if (enumerate(api, &count, handles.data()) != 0) {
++			return;
++		}
++		handles.resize(count);
++		for (auto* handle: handles) {
++			LUID             luid {};
++			DeviceProperties props {};
++			int32_t          result = -1;
++			for (int version = 3; version >= 0 && result != 0; version--) {
++				props                = {};
++				props.size           = sizeof(props);
++				props.version        = static_cast<uint8_t>(version);
++				props.device_id      = &luid;
++				props.device_id_size = sizeof(luid);
++				result               = properties(handle, &props);
++			}
++			if (result != 0 || props.device_type != 1) {
++				continue;
++			}
++			Device device;
++			device.handle     = handle;
++			device.has_luid   = luid.LowPart != 0 || luid.HighPart != 0;
++			device.luid       = luid;
++			device.name       = std::string(props.name, strnlen(props.name, sizeof(props.name)));
++			device.device_id  = props.pci_device_id;
++			device.xe_cores   = props.version >= 3 ? props.xe_cores : 0;
++			device.max_mhz    = props.frequency;
++			device.integrated = (props.adapter_flags & 1u) != 0;
++			library.devices.push_back(std::move(device));
++		}
++		library.ready = !library.devices.empty();
++		// The api handle stays open for the process.
++	});
++	return library;
++}
++
++} // namespace Igcl
++
++// ---------------------------------------------------------------------------------------------
++// D3DKMT adapter and node performance data (gdi32), as Task Manager reads the GPU temperature.
++
++namespace Kmt {
++
++struct OpenAdapterFromLuid {
++	LUID     luid;
++	uint32_t adapter;
++};
++struct CloseAdapter {
++	uint32_t adapter;
++};
++struct QueryAdapterInfo {
++	uint32_t adapter;
++	int32_t  type;
++	void*    data;
++	uint32_t size;
++};
++struct AdapterPerfData {
++	uint32_t physical_adapter_index;
++	uint64_t memory_frequency;
++	uint64_t max_memory_frequency;
++	uint64_t max_memory_frequency_oc;
++	uint64_t memory_bandwidth;
++	uint64_t pcie_bandwidth;
++	uint32_t fan_rpm;
++	uint32_t power;       // Tenths of a percent.
++	uint32_t temperature; // Tenths of a degree Celsius.
++	uint8_t  power_state_override;
++};
++static_assert(sizeof(AdapterPerfData) == 64);
++struct NodePerfData {
++	uint32_t node_ordinal;
++	uint32_t physical_adapter_index;
++	uint64_t frequency; // Hz
++	uint64_t max_frequency;
++	uint64_t max_frequency_oc;
++	uint32_t voltage;
++	uint32_t voltage_max;
++	uint32_t voltage_max_oc;
++	uint64_t max_transition_latency;
++};
++static_assert(sizeof(NodePerfData) == 56);
++
++constexpr int32_t QUERY_NODE_PERF_DATA    = 61; // KMTQAITYPE_NODEPERFDATA
++constexpr int32_t QUERY_ADAPTER_PERF_DATA = 62; // KMTQAITYPE_ADAPTERPERFDATA
++
++using OpenFn  = LONG(APIENTRY*)(OpenAdapterFromLuid*);
++using CloseFn = LONG(APIENTRY*)(const CloseAdapter*);
++using QueryFn = LONG(APIENTRY*)(const QueryAdapterInfo*);
++
++struct Api {
++	OpenFn  open  = nullptr;
++	CloseFn close = nullptr;
++	QueryFn query = nullptr;
++	bool    ready = false;
++};
++
++const Api& Get() {
++	static const Api api = [] {
++		Api   result;
++		auto* module = LoadLibraryExW(L"gdi32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++		result.ready = Resolve(module, "D3DKMTOpenAdapterFromLuid", result.open) &&
++		               Resolve(module, "D3DKMTCloseAdapter", result.close) &&
++		               Resolve(module, "D3DKMTQueryAdapterInfo", result.query);
++		return result;
++	}();
++	return api;
++}
++
++template <typename T>
++bool Query(uint32_t adapter, int32_t type, T& data) {
++	QueryAdapterInfo info {};
++	info.adapter = adapter;
++	info.type    = type;
++	info.data    = &data;
++	info.size    = sizeof(T);
++	return Get().query(&info) >= 0;
++}
++
++} // namespace Kmt
++
++} // namespace
++
++// ---------------------------------------------------------------------------------------------
++
++struct HostGpuSampler::Impl {
++	PDH_HQUERY   query            = nullptr;
++	PDH_HCOUNTER engines          = nullptr;
++	PDH_HCOUNTER adapter_dedicated = nullptr;
++	PDH_HCOUNTER adapter_shared   = nullptr;
++	PDH_HCOUNTER process_dedicated = nullptr;
++	PDH_HCOUNTER process_shared   = nullptr;
++	PDH_HCOUNTER thermal          = nullptr;
++	double       thermal_scale    = 1.0; // Counter units per kelvin.
++	bool         collected_once   = false;
++	std::vector<std::byte> buffer;
++	uint32_t     pid = GetCurrentProcessId();
++
++	// The adapter described, resolved again when the renderer names another one.
++	uint64_t choice_revision = ~0ull;
++	bool     has_target      = false;
++	LUID     target {};
++	uint32_t engine_3d = 0; // Node ordinal of the 3D engine (D3DKMT node data).
++
++	// D3DKMT handle of the target adapter (0: none).
++	uint32_t kmt_adapter = 0;
++	bool     kmt_tried   = false;
++
++	// IGCL previous counters, for power and activity rates.
++	const Igcl::Device*   igcl_device = nullptr;
++	bool                  igcl_tried  = false;
++	std::optional<double> last_time, last_energy, last_global, last_render;
++
++	Impl() {
++		const auto& pdh = Pdh();
++		if (!pdh.ready || pdh.open_query(nullptr, 0, &query) != ERROR_SUCCESS) {
++			query = nullptr;
++			return;
++		}
++		const auto add = [&](const wchar_t* path) -> PDH_HCOUNTER {
++			PDH_HCOUNTER counter = nullptr;
++			return pdh.add_counter(query, path, 0, &counter) == ERROR_SUCCESS ? counter : nullptr;
++		};
++		engines           = add(L"\\GPU Engine(*)\\Utilization Percentage");
++		adapter_dedicated = add(L"\\GPU Adapter Memory(*)\\Dedicated Usage");
++		adapter_shared    = add(L"\\GPU Adapter Memory(*)\\Shared Usage");
++		process_dedicated = add(L"\\GPU Process Memory(*)\\Dedicated Usage");
++		process_shared    = add(L"\\GPU Process Memory(*)\\Shared Usage");
++		thermal           = add(L"\\Thermal Zone Information(*)\\High Precision Temperature");
++		thermal_scale     = 10.0; // Tenths of a kelvin.
++		if (thermal == nullptr) {
++			thermal       = add(L"\\Thermal Zone Information(*)\\Temperature");
++			thermal_scale = 1.0;
++		}
++	}
++
++	~Impl() {
++		if (query != nullptr) {
++			Pdh().close_query(query);
++		}
++		CloseKmt();
++	}
++
++	Impl(const Impl&)            = delete;
++	Impl& operator=(const Impl&) = delete;
++
++	void CloseKmt() {
++		if (kmt_adapter != 0) {
++			Kmt::CloseAdapter close {kmt_adapter};
++			Kmt::Get().close(&close);
++			kmt_adapter = 0;
++		}
++		kmt_tried = false;
++	}
++
++	void SetTarget(const LUID& luid) {
++		if (has_target && SameLuid(target, luid)) {
++			return;
++		}
++		has_target  = true;
++		target      = luid;
++		igcl_device = nullptr;
++		igcl_tried  = false;
++		last_time.reset();
++		last_energy.reset();
++		last_global.reset();
++		last_render.reset();
++		CloseKmt();
++	}
++
++	void SampleEngines(HostStats& stats, const AdapterChoice& choice);
++	void SampleMemory(HostStats& stats) const;
++	void SampleIgcl(HostStats& stats, const AdapterChoice& choice);
++	void SampleKmt(HostStats& stats);
++	void SampleThermalZones(HostStats& stats);
++};
++
++void HostGpuSampler::Impl::SampleEngines(HostStats& stats, const AdapterChoice& choice) {
++	struct Entry {
++		Instance name;
++		double   value;
++	};
++	std::vector<Entry> entries;
++	ForEachInstance(engines, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, buffer,
++	                [&](const wchar_t* instance, const PDH_FMT_COUNTERVALUE& value) {
++		                Entry entry {};
++		                if (ParseInstance(instance, entry.name)) {
++			                entry.value = value.doubleValue;
++			                entries.push_back(std::move(entry));
++		                }
++	                });
++
++	// Without the renderer's LUID: the adapter this process uses most.
++	if (!has_target && !choice.has_luid) {
++		std::vector<std::pair<LUID, double>> ours;
++		for (const auto& entry: entries) {
++			if (!entry.name.has_pid || entry.name.pid != pid) {
++				continue;
++			}
++			auto it = std::find_if(ours.begin(), ours.end(),
++			                       [&](const auto& p) { return SameLuid(p.first, entry.name.luid); });
++			if (it == ours.end()) {
++				ours.emplace_back(entry.name.luid, entry.value);
++			} else {
++				it->second += entry.value;
++			}
++		}
++		const auto best = std::max_element(ours.begin(), ours.end(),
++		                                   [](const auto& a, const auto& b) { return a.second < b.second; });
++		if (best != ours.end() && best->second > 0.0) {
++			SetTarget(best->first);
++		}
++	}
++	if (!has_target || entries.empty()) {
++		return;
++	}
++
++	// Task Manager's figures: an engine's utilization is the sum over processes; the device's is
++	// that of its busiest engine.
++	struct Engine {
++		double     total = 0.0;
++		double     ours  = 0.0;
++		EngineKind kind  = EngineKind::Other;
++	};
++	std::unordered_map<uint64_t, Engine> by_engine;
++	for (const auto& entry: entries) {
++		if (!SameLuid(entry.name.luid, target)) {
++			continue;
++		}
++		auto& engine = by_engine[(static_cast<uint64_t>(entry.name.phys) << 32u) | entry.name.engine];
++		engine.total += entry.value;
++		engine.kind = KindOf(entry.name.type);
++		if (entry.name.has_pid && entry.name.pid == pid) {
++			engine.ours += entry.value;
++		}
++		if (engine.kind == EngineKind::ThreeD && entry.name.phys == 0) {
++			engine_3d = entry.name.engine;
++		}
++	}
++	if (by_engine.empty() || !collected_once) {
++		return; // The first collection has no interval yet.
++	}
++	double device = 0.0;
++	double ours   = 0.0;
++	std::optional<double> kinds[5];
++	for (const auto& [key, engine]: by_engine) {
++		const double total = std::clamp(engine.total, 0.0, 100.0);
++		device             = std::max(device, total);
++		ours               = std::max(ours, std::clamp(engine.ours, 0.0, 100.0));
++		auto& kind         = kinds[static_cast<size_t>(engine.kind)];
++		kind               = std::max(kind.value_or(0.0), total);
++	}
++	stats.gpu_percent         = device;
++	stats.gpu_process_percent = ours;
++	stats.gpu_3d_percent      = kinds[static_cast<size_t>(EngineKind::ThreeD)];
++	stats.gpu_compute_percent = kinds[static_cast<size_t>(EngineKind::Compute)];
++	stats.gpu_copy_percent    = kinds[static_cast<size_t>(EngineKind::Copy)];
++	stats.gpu_video_percent   = kinds[static_cast<size_t>(EngineKind::Video)];
++}
++
++void HostGpuSampler::Impl::SampleMemory(HostStats& stats) const {
++	if (!has_target) {
++		return;
++	}
++	std::vector<std::byte> scratch;
++	const auto sum = [&](PDH_HCOUNTER counter, bool own) -> std::optional<uint64_t> {
++		std::optional<uint64_t> total;
++		ForEachInstance(counter, PDH_FMT_LARGE, scratch,
++		                [&](const wchar_t* instance, const PDH_FMT_COUNTERVALUE& value) {
++			                Instance name;
++			                if (!ParseInstance(instance, name) || !SameLuid(name.luid, target) ||
++			                    (own && (!name.has_pid || name.pid != pid)) || value.largeValue < 0) {
++				                return;
++			                }
++			                total = total.value_or(0) + static_cast<uint64_t>(value.largeValue);
++		                });
++		return total;
++	};
++	stats.gpu_dedicated_used    = sum(adapter_dedicated, false);
++	stats.gpu_shared_used       = sum(adapter_shared, false);
++	stats.gpu_process_dedicated = sum(process_dedicated, true);
++	stats.gpu_process_shared    = sum(process_shared, true);
++}
++
++void HostGpuSampler::Impl::SampleIgcl(HostStats& stats, const AdapterChoice& choice) {
++	if (!igcl_tried) {
++		igcl_tried   = true;
++		auto& library = Igcl::Get();
++		if (library.ready) {
++			for (const auto& device: library.devices) {
++				if (device.has_luid ? SameLuid(device.luid, target)
++				                    : (choice.device_id != 0 && device.device_id == choice.device_id)) {
++					igcl_device = &device;
++					break;
++				}
++			}
++		}
++	}
++	if (igcl_device == nullptr) {
++		return;
++	}
++	const auto& device = *igcl_device;
++	if (device.xe_cores != 0) {
++		stats.gpu_cores     = device.xe_cores;
++		stats.gpu_core_name = "Xe cores";
++	}
++	if (device.max_mhz != 0) {
++		stats.gpu_max_clock_mhz = device.max_mhz;
++	}
++	if (stats.gpu_kind.empty()) {
++		stats.gpu_kind = device.integrated ? "integrated" : "discrete";
++	}
++
++	Igcl::PowerTelemetry telemetry {};
++	telemetry.size    = sizeof(telemetry);
++	telemetry.version = 1;
++	auto& library     = Igcl::Get();
++	{
++		std::scoped_lock lock(library.mutex);
++		if (library.telemetry(device.handle, &telemetry) != 0) {
++			return;
++		}
++	}
++	const auto now      = Igcl::Value(telemetry.time_stamp);
++	const auto energy   = Igcl::Value(telemetry.gpu_energy);
++	const auto global   = Igcl::Value(telemetry.global_activity);
++	const auto render   = Igcl::Value(telemetry.render_compute_activity);
++	if (now && last_time && *now > *last_time) {
++		const double elapsed = *now - *last_time;
++		if (energy && last_energy && *energy >= *last_energy) {
++			stats.gpu_power_w = (*energy - *last_energy) / elapsed;
++		}
++		// Busy time over wall time: the utilization when the engine counters are missing.
++		if (!stats.gpu_percent && global && last_global && *global >= *last_global) {
++			stats.gpu_percent = std::clamp((*global - *last_global) / elapsed * 100.0, 0.0, 100.0);
++		}
++		if (!stats.gpu_3d_percent && render && last_render && *render >= *last_render) {
++			stats.gpu_3d_percent = std::clamp((*render - *last_render) / elapsed * 100.0, 0.0, 100.0);
++		}
++	}
++	last_time   = now;
++	last_energy = energy;
++	last_global = global;
++	last_render = render;
++
++	if (const auto clock = Igcl::Value(telemetry.gpu_clock); clock && *clock > 0.0) {
++		stats.gpu_clock_mhz = *clock;
++	}
++	if (const auto temperature = Igcl::Value(telemetry.gpu_temperature);
++	    temperature && *temperature > 0.0 && *temperature < 150.0) {
++		stats.gpu_temperature_c = *temperature;
++	}
++	if (const auto percent = Igcl::Value(telemetry.gpu_power_percent); percent && *percent > 0.0) {
++		stats.gpu_power_percent = *percent;
++	}
++	for (const auto& fan: telemetry.fan_speed) {
++		if (const auto speed = Igcl::Value(fan); speed && fan.units == Igcl::UNITS_RPM && *speed > 0.0) {
++			stats.gpu_fan_rpm = static_cast<uint32_t>(*speed);
++			break;
++		}
++	}
++	std::string throttle;
++	const auto  reason = [&](bool limited, const char* name) {
++		if (limited) {
++			throttle += throttle.empty() ? std::string(name) : std::string(", ") + name;
++		}
++	};
++	reason(telemetry.gpu_power_limited, "power");
++	reason(telemetry.gpu_temperature_limited, "thermal");
++	reason(telemetry.gpu_current_limited, "current");
++	reason(telemetry.gpu_voltage_limited, "voltage");
++	stats.gpu_throttle = std::move(throttle);
++}
++
++void HostGpuSampler::Impl::SampleKmt(HostStats& stats) {
++	const auto& kmt = Kmt::Get();
++	if (!kmt.ready) {
++		return;
++	}
++	if (!kmt_tried) {
++		kmt_tried = true;
++		Kmt::OpenAdapterFromLuid open {};
++		open.luid = target;
++		if (kmt.open(&open) >= 0) {
++			kmt_adapter = open.adapter;
++		}
++	}
++	if (kmt_adapter == 0) {
++		return;
++	}
++	// Drivers without the data report zeros (Intel); only non-zero values are taken.
++	Kmt::AdapterPerfData adapter {};
++	if (Kmt::Query(kmt_adapter, Kmt::QUERY_ADAPTER_PERF_DATA, adapter)) {
++		if (!stats.gpu_temperature_c && adapter.temperature > 0 && adapter.temperature < 1500) {
++			stats.gpu_temperature_c = adapter.temperature / 10.0;
++		}
++		if (!stats.gpu_fan_rpm && adapter.fan_rpm > 0) {
++			stats.gpu_fan_rpm = adapter.fan_rpm;
++		}
++		if (!stats.gpu_power_percent && adapter.power > 0) {
++			stats.gpu_power_percent = adapter.power / 10.0;
++		}
++	}
++	Kmt::NodePerfData node {};
++	node.node_ordinal = engine_3d;
++	if (Kmt::Query(kmt_adapter, Kmt::QUERY_NODE_PERF_DATA, node)) {
++		if (!stats.gpu_clock_mhz && node.frequency > 0) {
++			stats.gpu_clock_mhz = static_cast<double>(node.frequency) / 1e6;
++		}
++		if (!stats.gpu_max_clock_mhz && node.max_frequency > 0) {
++			stats.gpu_max_clock_mhz = static_cast<double>(node.max_frequency) / 1e6;
++		}
++	}
++}
++
++void HostGpuSampler::Impl::SampleThermalZones(HostStats& stats) {
++	std::optional<double> hottest;
++	ForEachInstance(thermal, PDH_FMT_DOUBLE, buffer,
++	                [&](const wchar_t* /*instance*/, const PDH_FMT_COUNTERVALUE& value) {
++		                const double celsius = value.doubleValue / thermal_scale - 273.15;
++		                if (celsius > 0.0 && celsius < 125.0) {
++			                hottest = std::max(hottest.value_or(celsius), celsius);
++		                }
++	                });
++	if (hottest) {
++		stats.gpu_temperature_c      = *hottest;
++		stats.gpu_temperature_is_soc = true;
++	}
++}
++
++HostGpuSampler::HostGpuSampler(): m_impl(std::make_unique<Impl>()) {}
++
++HostGpuSampler::~HostGpuSampler() = default;
++
++void HostGpuSampler::Sample(HostStats& stats) {
++	auto&      s      = *m_impl;
++	const auto choice = CurrentAdapter();
++	if (choice.revision != s.choice_revision) {
++		s.choice_revision = choice.revision;
++		if (choice.has_luid) {
++			s.SetTarget(choice.luid);
++		}
++	}
++	if (s.query != nullptr) {
++		const bool collected = Pdh().collect(s.query) == ERROR_SUCCESS;
++		if (collected) {
++			s.SampleEngines(stats, choice);
++			s.collected_once = true;
++		}
++	}
++	// No LUID and no usage yet: the named adapter, else the first hardware adapter.
++	if (!s.has_target) {
++		const auto& adapters = DxgiAdapters();
++		const DxgiAdapter* pick = nullptr;
++		for (const auto& adapter: adapters) {
++			if (!adapter.software && !choice.name.empty() &&
++			    (Lower(adapter.name).find(Lower(choice.name)) != std::string::npos ||
++			     Lower(choice.name).find(Lower(adapter.name)) != std::string::npos)) {
++				pick = &adapter;
++				break;
++			}
++		}
++		for (const auto& adapter: adapters) {
++			if (pick == nullptr && !adapter.software) {
++				pick = &adapter;
++			}
++		}
++		if (pick == nullptr) {
++			return;
++		}
++		s.SetTarget(pick->luid);
++	}
++
++	const auto* dxgi      = FindDxgi(s.target);
++	const auto  vendor_id = choice.vendor_id != 0 ? choice.vendor_id : dxgi != nullptr ? dxgi->vendor_id : 0;
++	stats.gpu_model       = !choice.name.empty() ? choice.name : dxgi != nullptr ? dxgi->name : std::string();
++	stats.gpu_vendor      = VendorName(vendor_id);
++	if (choice.known) {
++		stats.gpu_kind = choice.integrated ? "integrated" : "discrete";
++	}
++	if (dxgi != nullptr) {
++		stats.gpu_driver = dxgi->driver;
++		if (dxgi->dedicated != 0) {
++			stats.gpu_dedicated_total = dxgi->dedicated;
++		}
++		if (dxgi->shared != 0) {
++			stats.gpu_shared_total = dxgi->shared;
++		}
++	}
++	if (s.query != nullptr && s.collected_once) {
++		s.SampleMemory(stats);
++	}
++	if (vendor_id == 0x8086) {
++		s.SampleIgcl(stats, choice);
++	}
++	s.SampleKmt(stats);
++	if (stats.gpu_kind.empty() && dxgi != nullptr) {
++		// No better source: integrated GPUs reserve little or no dedicated memory.
++		stats.gpu_kind = dxgi->dedicated < (512ull << 20u) ? "integrated" : "discrete";
++	}
++	if (!stats.gpu_temperature_c && stats.gpu_kind == "integrated") {
++		s.SampleThermalZones(stats);
++	}
++}
++
++void SetHostGpuAdapter(const uint8_t* luid, const char* name, uint32_t vendor_id, uint32_t device_id,
++                       bool integrated) {
++	std::scoped_lock lock(g_adapter_mutex);
++	g_adapter.has_luid = luid != nullptr;
++	g_adapter.luid     = {};
++	if (luid != nullptr) {
++		std::memcpy(&g_adapter.luid.LowPart, luid, 4);
++		std::memcpy(&g_adapter.luid.HighPart, luid + 4, 4);
++	}
++	g_adapter.name       = name != nullptr ? name : "";
++	g_adapter.vendor_id  = vendor_id;
++	g_adapter.device_id  = device_id;
++	g_adapter.integrated = integrated;
++	g_adapter.known      = true;
++	g_adapter.revision++;
++}
++
++} // namespace Common
++
++#else
++
++namespace Common {
++
++void SetHostGpuAdapter(const uint8_t* /*luid*/, const char* /*name*/, uint32_t /*vendor_id*/,
++                       uint32_t /*device_id*/, bool /*integrated*/) {}
++
++} // namespace Common
++
++#endif
+diff --git a/src/common/hostGpuWindows.h b/src/common/hostGpuWindows.h
+new file mode 100644
+index 00000000..aa614eed
+--- /dev/null
++++ b/src/common/hostGpuWindows.h
+@@ -0,0 +1,38 @@
++#ifndef KYTY_COMMON_HOST_GPU_WINDOWS_H_
++#define KYTY_COMMON_HOST_GPU_WINDOWS_H_
++
++#include "common/hostStats.h"
++
++#include <memory>
++
++namespace Common {
++
++// Windows GPU statistics for HostStatsSampler (hostStats.cpp). Every source is loaded at run time
++// and optional; a missing one leaves its HostStats fields unset:
++//  - PDH "GPU Engine", "GPU Adapter Memory", "GPU Process Memory" (what Task Manager shows, every
++//    vendor): utilization by engine kind, the emulator's share, dedicated and shared memory;
++//  - DXGI: adapter name, memory sizes and driver version, matched by LUID;
++//  - Intel Graphics Control Library (ControlLib.dll, installed with the Intel driver): clock,
++//    power from the energy counter, temperature, throttle reasons, Xe cores;
++//  - D3DKMT adapter/node performance data (the GPU temperature in Task Manager): temperature,
++//    fan, power share and clock on drivers that report them (NVIDIA, AMD; Intel reports zeros);
++//  - PDH "Thermal Zone Information": the hottest ACPI zone as the SoC temperature of an
++//    integrated GPU that has no sensor of its own.
++// Not thread-safe; HostStatsSampler calls it from one thread. The first sample has no rates.
++class HostGpuSampler final {
++public:
++	HostGpuSampler();
++	~HostGpuSampler();
++	HostGpuSampler(const HostGpuSampler&)            = delete;
++	HostGpuSampler& operator=(const HostGpuSampler&) = delete;
++
++	void Sample(HostStats& stats);
++
++private:
++	struct Impl;
++	std::unique_ptr<Impl> m_impl;
++};
++
++} // namespace Common
++
++#endif /* KYTY_COMMON_HOST_GPU_WINDOWS_H_ */
+diff --git a/src/common/hostStats.cpp b/src/common/hostStats.cpp
+index 12c9f135..f3a9df0b 100644
+--- a/src/common/hostStats.cpp
++++ b/src/common/hostStats.cpp
+@@ -1,6 +1,9 @@
+ #include "common/hostStats.h"
+ 
+ #include "common/config.h"
++#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
++#include "common/hostGpuWindows.h"
++#endif
+ 
+ #include <algorithm>
+ #include <chrono>
+@@ -67,9 +70,11 @@ uint64_t FileTimeTo100Ns(const FILETIME& time) {
+ 	return (static_cast<uint64_t>(time.dwHighDateTime) << 32u) | time.dwLowDateTime;
+ }
+ 
+-struct PlatformState {};
++struct PlatformState {
++	HostGpuSampler gpu; // hostGpuWindows.cpp
++};
+ 
+-void SamplePlatform(PlatformState& /*state*/, HostStats& stats, Counters& now) {
++void SamplePlatform(PlatformState& state, HostStats& stats, Counters& now) {
+ 	const auto process = GetCurrentProcess();
+ 	FILETIME   creation {};
+ 	FILETIME   exit {};
+@@ -107,6 +112,8 @@ void SamplePlatform(PlatformState& /*state*/, HostStats& stats, Counters& now) {
+ 		                            : system.dwMemoryLoad >= 80 ? MemoryPressure::Warning
+ 		                                                        : MemoryPressure::Normal;
+ 	}
++
++	state.gpu.Sample(stats);
+ }
+ 
+ #else
+diff --git a/src/common/hostStats.h b/src/common/hostStats.h
+index 24d2595a..cb87967b 100644
+--- a/src/common/hostStats.h
++++ b/src/common/hostStats.h
+@@ -54,7 +54,7 @@ struct HostStats {
+ 	std::optional<double> disk_read_per_s;
+ 	std::optional<double> disk_write_per_s;
+ 
+-	// GPU, whole device (macOS IOAccelerator).
++	// GPU, whole device (macOS IOAccelerator; Windows: hostGpuWindows.cpp).
+ 	std::string             gpu_model;
+ 	std::optional<uint32_t> gpu_cores;
+ 	std::optional<double>   gpu_percent;
+@@ -63,8 +63,42 @@ struct HostStats {
+ 	std::optional<uint64_t> gpu_memory_in_use; // System memory the GPU driver has in use.
+ 	std::optional<uint64_t> gpu_memory_allocated;
+ 	std::optional<uint64_t> gpu_recoveries; // GPU resets since boot.
++
++	// GPU on Windows (hostGpuWindows.cpp): the adapter the renderer uses (SetHostGpuAdapter), read
++	// from the counters Task Manager shows for every vendor, DXGI, and the driver's own telemetry
++	// where it has one (Intel IGCL, else D3DKMT performance data). Missing values stay unset.
++	std::string             gpu_vendor;    // "Intel", "NVIDIA", "AMD", or empty.
++	std::string             gpu_kind;      // "integrated", "discrete", or empty.
++	std::string             gpu_core_name; // What gpu_cores counts ("Xe cores"); empty: "cores".
++	std::string             gpu_driver;    // Driver version, e.g. "32.0.101.9175".
++	std::optional<double>   gpu_process_percent; // The emulator's own share, busiest engine, 0-100.
++	std::optional<double>   gpu_3d_percent;      // Busiest engine of each kind, whole device.
++	std::optional<double>   gpu_compute_percent;
++	std::optional<double>   gpu_copy_percent;
++	std::optional<double>   gpu_video_percent;
++	std::optional<double>   gpu_clock_mhz;
++	std::optional<double>   gpu_max_clock_mhz;
++	std::optional<double>   gpu_power_w;
++	std::optional<double>   gpu_power_percent; // Of the board power limit.
++	std::optional<double>   gpu_temperature_c;
++	bool                    gpu_temperature_is_soc = false; // ACPI thermal zone (integrated GPUs).
++	std::optional<uint32_t> gpu_fan_rpm;
++	std::string             gpu_throttle; // What limits the clock now ("power", "thermal", ...).
++	std::optional<uint64_t> gpu_dedicated_used;  // Whole device, all processes.
++	std::optional<uint64_t> gpu_dedicated_total;
++	std::optional<uint64_t> gpu_shared_used;     // System RAM the GPU uses (all of it on an iGPU).
++	std::optional<uint64_t> gpu_shared_total;
++	std::optional<uint64_t> gpu_process_dedicated; // The emulator's own.
++	std::optional<uint64_t> gpu_process_shared;
+ };
+ 
++// The adapter the renderer created its device on, so host statistics describe that GPU and not
++// another one (laptops and handhelds list several). luid: VkPhysicalDeviceIDProperties::deviceLUID
++// (nullptr when the driver gives none); vendor_id/device_id: PCI IDs. Any thread; Windows only,
++// a no-op elsewhere.
++void SetHostGpuAdapter(const uint8_t* luid, const char* name, uint32_t vendor_id, uint32_t device_id,
++                       bool integrated);
++
+ // May block for a few milliseconds (thread enumeration, OS registry reads), so call it off the
+ // render thread. The first sample has no rates.
+ class HostStatsSampler final {
 diff --git a/src/graphics/guest_gpu/command_processor/commandProcessor.h b/src/graphics/guest_gpu/command_processor/commandProcessor.h
-index 799f5bd3..22d1731c 100644
+index 799f5bd3..9e4fbd22 100644
 --- a/src/graphics/guest_gpu/command_processor/commandProcessor.h
 +++ b/src/graphics/guest_gpu/command_processor/commandProcessor.h
 @@ -249,6 +249,7 @@ public:
@@ -158,8 +1356,16 @@ index 799f5bd3..22d1731c 100644
  	[[nodiscard]] bool Sequenced() const noexcept { return m_sequencer != nullptr; }
  	// Resolver (GPU thread): executes the ops of graphics submission `submission` (admission
  	// sequence) until its end (Complete), a suspended op, a slice yield, or an empty op ring
+@@ -495,6 +496,7 @@ private:
+ 	// MaybeFlushIdleGpu: recording tick being counted and its draws/dispatches so far.
+ 	uint64_t  m_idle_flush_tick             = 0;
+ 	uint32_t  m_idle_flush_draws            = 0;
++	uint64_t  m_idle_flush_refresh_ns       = 0; // last timeline query (KYTY_IDLE_FLUSH_REFRESH_US)
+ 	// Draws recorded in the current graphics slice (MaybeYieldSlice).
+ 	uint32_t  m_slice_draws                 = 0;
+ 
 diff --git a/src/graphics/guest_gpu/graphicsRun.cpp b/src/graphics/guest_gpu/graphicsRun.cpp
-index 6ad75d88..d4eac34f 100644
+index 6ad75d88..54bc9dc1 100644
 --- a/src/graphics/guest_gpu/graphicsRun.cpp
 +++ b/src/graphics/guest_gpu/graphicsRun.cpp
 @@ -40,6 +40,7 @@
@@ -246,7 +1452,42 @@ index 6ad75d88..d4eac34f 100644
  	const auto spin_us = static_cast<uint64_t>(g_sync_command_spin_us.Get());
  	if (spin_us != 0) {
  		// KYTY_SYNC_COMMAND_SPIN_US: the caller spins that long (about what such a command waits
-@@ -1305,6 +1327,13 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
+@@ -941,6 +963,13 @@ static uint32_t IdleFlushMinDraws() {
+ 	return static_cast<uint32_t>(g_idle_flush_draws.Get());
+ }
+ 
++// KYTY_IDLE_FLUSH_REFRESH_US (default 200, 0 = every 4th draw as before): MaybeFlushIdleGpu
++// queries the GPU timeline (vkGetSemaphoreCounterValue, an ioctl on RADV) at most once per this
++// many microseconds. Every 4th draw made it ~420 queries per frame at the Sky Garden start.
++static Live::Switch g_idle_flush_refresh_us("KYTY_IDLE_FLUSH_REFRESH_US", [](const char* value) -> int64_t {
++	return value != nullptr ? static_cast<int64_t>(std::strtoull(value, nullptr, 10)) : 200;
++});
++
+ void CommandProcessor::MaybeFlushIdleGpu() {
+ 	// A draw or dispatch just recorded writes a page the command processor reads back later (e.g.
+ 	// indirect arguments): submit it now, outside a rendering instance, so that read waits for
+@@ -970,10 +999,19 @@ void CommandProcessor::MaybeFlushIdleGpu() {
+ 	}
+ 	auto& master = scheduler.GetMasterSemaphore();
+ 	if (master.KnownGpuTick() + 1u < current) {
+-		// Refresh the timeline value only every few draws (a driver query).
++		// Refresh the timeline value only every few draws (a driver query), and at most once per
++		// KYTY_IDLE_FLUSH_REFRESH_US.
+ 		if ((m_idle_flush_draws % 4u) != 0) {
+ 			return;
+ 		}
++		if (const auto interval = static_cast<uint64_t>(g_idle_flush_refresh_us.Get()) * 1000u;
++		    interval != 0) {
++			const auto now = CpNowNs();
++			if (now - m_idle_flush_refresh_ns < interval) {
++				return;
++			}
++			m_idle_flush_refresh_ns = now;
++		}
+ 		master.Refresh();
+ 		if (master.KnownGpuTick() + 1u < current) {
+ 			return;
+@@ -1305,6 +1343,13 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
  		        ? cache.TryWriteDataGpu(address, src + (dw_num - 1u), sizeof(uint32_t))
  		        : cache.TryWriteDataGpu(address, src, uint64_t {dw_num} * sizeof(uint32_t));
  		if (written) {
@@ -260,7 +1501,7 @@ index 6ad75d88..d4eac34f 100644
  			if (g_gpu_state != nullptr) {
  				g_gpu_state->DropCpVisibleLabels(
  				    address, write_one_address ? sizeof(uint32_t) : uint64_t {dw_num} * sizeof(uint32_t));
-@@ -1465,6 +1494,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
+@@ -1465,6 +1510,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
  		if (dst_gds) {
  			trace_gds(dst_address_or_offset, src_address_or_offset_or_immediate & 0xffffffffu, 0);
  		}
@@ -272,7 +1513,7 @@ index 6ad75d88..d4eac34f 100644
  		buffer_cache.FillBuffer(
  		    dst_address_or_offset, num_bytes,
  		    static_cast<uint32_t>(src_address_or_offset_or_immediate & 0xffffffffu), dst_gds);
-@@ -1482,6 +1516,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
+@@ -1482,6 +1532,11 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
  	} else if (src_gds) {
  		trace_gds(src_address_or_offset_or_immediate, dst_address_or_offset, 2);
  	}
@@ -284,7 +1525,7 @@ index 6ad75d88..d4eac34f 100644
  	buffer_cache.CopyBuffer(dst_address_or_offset, src_address_or_offset_or_immediate, num_bytes,
  	                        dst_gds, src_gds);
  }
-@@ -2538,6 +2577,9 @@ void CommandProcessor::ExecDrawIndex(const CpSeq::DrawIndexOp& op) {
+@@ -2538,6 +2593,9 @@ void CommandProcessor::ExecDrawIndex(const CpSeq::DrawIndexOp& op) {
  		CommitStats::StepMark(CommitStats::Step::GapRetire);
  		return;
  	}
@@ -294,7 +1535,7 @@ index 6ad75d88..d4eac34f 100644
  	if (GraphicsRunDebugDumpEnabled() && (args.base_vertex != 0 || args.first_instance != 0)) {
  		LOGF("\t draw indexed offsets: base_vertex = %" PRId32 ", first_instance = %" PRIu32 "\n",
  		     args.base_vertex, args.first_instance);
-@@ -2556,6 +2598,10 @@ void CommandProcessor::ExecDrawIndex(const CpSeq::DrawIndexOp& op) {
+@@ -2556,6 +2614,10 @@ void CommandProcessor::ExecDrawIndex(const CpSeq::DrawIndexOp& op) {
  		(void)RepeatTrace::TakeDrawPacket();
  		RepeatTrace::OnUnpreparedDraw();
  	}
@@ -305,7 +1546,7 @@ index 6ad75d88..d4eac34f 100644
  	m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
  	MaybeFlushIdleGpu();
  	MaybeYieldSlice();
-@@ -2635,8 +2681,6 @@ void CommandProcessor::ValidateIndirectSource(const DrawIndirectSource& source)
+@@ -2635,8 +2697,6 @@ void CommandProcessor::ValidateIndirectSource(const DrawIndirectSource& source)
  	for (uint32_t i = 0; i < count; i++) {
  		const auto record = source.args_addr + static_cast<uint64_t>(i) * source.stride;
  		const auto args   = ReadGuestForCp<DrawIndexedIndirectArgs>(record);
@@ -314,7 +1555,7 @@ index 6ad75d88..d4eac34f 100644
  		const auto end =
  		    static_cast<uint64_t>(args.start_index_location) + args.index_count_per_instance;
  		if (args.instance_count != 0 && args.index_count_per_instance != 0 &&
-@@ -2645,7 +2689,8 @@ void CommandProcessor::ValidateIndirectSource(const DrawIndirectSource& source)
+@@ -2645,7 +2705,8 @@ void CommandProcessor::ValidateIndirectSource(const DrawIndirectSource& source)
  			     "INDEX_BUFFER_SIZE=%u (the CPU-read draw uses %u indices)\n",
  			     i, count, record, args.start_index_location, args.index_count_per_instance,
  			     source.index_buffer_size,
@@ -324,7 +1565,7 @@ index 6ad75d88..d4eac34f 100644
  		}
  	}
  }
-@@ -2691,7 +2736,15 @@ bool CommandProcessor::TryDrawIndirectNative(DrawIndirectSource source) {
+@@ -2691,7 +2752,15 @@ bool CommandProcessor::TryDrawIndirectNative(DrawIndirectSource source) {
  		}
  	}
  
@@ -340,7 +1581,7 @@ index 6ad75d88..d4eac34f 100644
  		Profiler::CountFrameEvent(Profiler::FrameEvent::DrawIndirectFallback);
  		return false;
  	}
-@@ -2853,8 +2906,8 @@ void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
+@@ -2853,8 +2922,8 @@ void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
  	    op.index_base_addr + static_cast<uint64_t>(args.start_index_location) * index_size;
  
  	const uint32_t index_count =
@@ -351,7 +1592,7 @@ index 6ad75d88..d4eac34f 100644
  	if (GraphicsRunDebugDumpEnabled() && index_count != args.index_count_per_instance) {
  		static std::atomic<uint32_t> log_count {0};
  		if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
-@@ -2980,9 +3033,8 @@ void CommandProcessor::ExecDrawIndirectMulti(const CpSeq::DrawIndirectOp& op) {
+@@ -2980,9 +3049,8 @@ void CommandProcessor::ExecDrawIndirectMulti(const CpSeq::DrawIndirectOp& op) {
  		    op.index_base_addr + static_cast<uint64_t>(args.start_index_location) * index_size;
  
  		const uint32_t index_count =
@@ -363,7 +1604,7 @@ index 6ad75d88..d4eac34f 100644
  		if (GraphicsRunDebugDumpEnabled() && index_count != args.index_count_per_instance) {
  			static std::atomic<uint32_t> log_count {0};
  			if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
-@@ -3080,9 +3132,65 @@ void CommandProcessor::ExecDispatchDirect(const CpSeq::DispatchDirectOp& op) {
+@@ -3080,9 +3148,65 @@ void CommandProcessor::ExecDispatchDirect(const CpSeq::DispatchDirectOp& op) {
  			RepeatTrace::OnDispatch(static_cast<uint32_t>(m_interrupt_event_id), shaders.GetCs(),
  			                        thread_group_x, thread_group_y, thread_group_z, mode);
  		}
@@ -432,7 +1673,7 @@ index 6ad75d88..d4eac34f 100644
  		MaybeFlushIdleGpu();
  	}
  }
-@@ -3140,8 +3248,70 @@ void CommandProcessor::ExecDispatchIndirect(const CpSeq::DispatchIndirectOp& op)
+@@ -3140,8 +3264,70 @@ void CommandProcessor::ExecDispatchIndirect(const CpSeq::DispatchIndirectOp& op)
  		ExecDispatchDirect(direct);
  		return;
  	}
@@ -505,7 +1746,7 @@ index 6ad75d88..d4eac34f 100644
  	MaybeFlushIdleGpu();
  }
  
-@@ -3205,6 +3375,9 @@ void CommandProcessor::ExecDrawAuto(const CpSeq::DrawAutoOp& op) {
+@@ -3205,6 +3391,9 @@ void CommandProcessor::ExecDrawAuto(const CpSeq::DrawAutoOp& op) {
  		CommitStats::StepMark(CommitStats::Step::GapRetire);
  		return;
  	}
@@ -515,7 +1756,7 @@ index 6ad75d88..d4eac34f 100644
  	if (RepeatTrace::Enabled()) {
  		NoteRepeatTraceDrawPacket();
  	}
-@@ -3217,6 +3390,10 @@ void CommandProcessor::ExecDrawAuto(const CpSeq::DrawAutoOp& op) {
+@@ -3217,6 +3406,10 @@ void CommandProcessor::ExecDrawAuto(const CpSeq::DrawAutoOp& op) {
  		(void)RepeatTrace::TakeDrawPacket();
  		RepeatTrace::OnUnpreparedDraw();
  	}
@@ -526,7 +1767,7 @@ index 6ad75d88..d4eac34f 100644
  	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
  	MaybeFlushIdleGpu();
  	MaybeYieldSlice();
-@@ -3983,6 +4160,13 @@ void CommandProcessor::ExecEndOfPipe(const CpSeq::EndOfPipeOp& op) {
+@@ -3983,6 +4176,13 @@ void CommandProcessor::ExecEndOfPipe(const CpSeq::EndOfPipeOp& op) {
  }
  
  void CommandProcessor::EmitGlobalBarrier() {
@@ -540,7 +1781,7 @@ index 6ad75d88..d4eac34f 100644
  	KYTY_GPU_OP_SITE("guest.global_barrier");
  	KYTY_PROFILER_DETAIL_FUNCTION();
  	RenderLockGuard lock(m_renderer.GetMutex());
-@@ -5801,6 +5985,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
+@@ -5801,6 +6001,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
  				if (g_gpu_state != nullptr && g_gpu_state->HasPendingCommands()) {
  					continue;
  				}
@@ -550,7 +1791,7 @@ index 6ad75d88..d4eac34f 100644
  				execution.m_yielded = true;
  				return Pm4ProcessResult::Blocked;
  			}
-@@ -5831,6 +6018,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
+@@ -5831,6 +6034,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
  			continue;
  		}
  		if (kind == CpSeq::OpKind::StreamEnd) {
@@ -560,7 +1801,7 @@ index 6ad75d88..d4eac34f 100644
  			EXIT_IF(view.As<CpSeq::StreamEndOp>().submission != submission);
  			if (m_verifier != nullptr && m_verifier->Follows(submission)) {
  				m_verifier->Finish();
-@@ -5841,6 +6031,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
+@@ -5841,6 +6047,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
  			return Pm4ProcessResult::Complete;
  		}
  		if (kind == CpSeq::OpKind::Handoff) {
@@ -570,7 +1811,7 @@ index 6ad75d88..d4eac34f 100644
  			EXIT_IF(view.As<CpSeq::HandoffOp>().submission != submission);
  			m_ops->Pop();
  			sequencer.NoteExecuted(sequence + 1u);
-@@ -5863,6 +6056,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
+@@ -5863,6 +6072,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
  		}
  		// The back's per-packet work of the packets parsed since the previous op.
  		if ((header.flags & CpSeq::FlagAdvanceEpoch) != 0) {
@@ -580,7 +1821,7 @@ index 6ad75d88..d4eac34f 100644
  			SyncEpoch::Advance();
  		}
  		if (packet > m_resolver_packets) {
-@@ -5871,11 +6067,18 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
+@@ -5871,11 +6083,18 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
  				    static_cast<uint32_t>(std::min<uint64_t>(packet - m_resolver_packets, 1u << 20u));
  				if (m_packets_since_eop_request >= EopFlushPacketLimit() && OptionalSubmitAllowed()) {
  					// Bound how long a batched end-of-pipe interrupt waits (at an op, not a packet).
@@ -599,7 +1840,7 @@ index 6ad75d88..d4eac34f 100644
  		const bool retry     = m_retry_op == sequence + 1u;
  		const bool following = m_verifier != nullptr && m_verifier->Follows(submission) &&
  		                       !CpSeq::IsTransport(kind);
-@@ -5925,6 +6128,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
+@@ -5925,6 +6144,9 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
  		sequencer.NoteExecuted(sequence + 1u);
  		execution.m_made_progress = true;
  		if (execution.m_yield) {
@@ -609,7 +1850,7 @@ index 6ad75d88..d4eac34f 100644
  			execution.m_yield   = false;
  			execution.m_yielded = true;
  			return Pm4ProcessResult::Blocked;
-@@ -5936,4 +6142,38 @@ bool GuestGpu::IsGpuThread() noexcept {
+@@ -5936,4 +6158,38 @@ bool GuestGpu::IsGpuThread() noexcept {
  	return g_gpu_thread;
  }
  
@@ -948,10 +2189,28 @@ index a473c722..60531487 100644
  	if (const auto violations = CommandRecorder::GuardViolations(); violations != 0) {
  		std::printf("  Kyty command guard (KYTY_CMD_GUARD): %" PRIu64 " violation(s) before the loss\n", violations);
 diff --git a/src/graphics/host_gpu/graphicContext.h b/src/graphics/host_gpu/graphicContext.h
-index ed299289..2208adbf 100644
+index ed299289..61304720 100644
 --- a/src/graphics/host_gpu/graphicContext.h
 +++ b/src/graphics/host_gpu/graphicContext.h
-@@ -136,11 +136,16 @@ struct GraphicContext {
+@@ -11,6 +11,7 @@
+ #include <atomic>
+ #include <chrono>
+ #include <cstdint>
++#include <functional>
+ #include <map>
+ #include <memory>
+ #include <mutex>
+@@ -92,6 +93,9 @@ struct GraphicContext {
+ 	// VK_EXT_depth_clip_enable: depth clipping set apart from the always-on depth clamp (the DB's
+ 	// behaviour). Without it, pipelines clamp only where the guest turns Z clipping off.
+ 	bool                               depth_clip_enable_enabled             = false;
++	// VK_EXT_image_view_min_lod: optional per-view minLod clamping (#211); without it, views omit
++	// VkImageViewMinLodCreateInfoEXT so GPUs lacking the extension still start.
++	bool                               image_view_min_lod_enabled            = false;
+ 	bool                               conditional_rendering_enabled         = false;
+ 	bool                               supports_block_texel_view              = false;
+ 	// shaderStorageImageReadWithoutFormat (TileManager::TileFromImage).
+@@ -136,11 +140,16 @@ struct GraphicContext {
  	uint32_t                           side_queue_index = 0;
  	vk::Queue                          side_queue       = nullptr;
  	Common::Mutex                      side_queue_mutex;
@@ -969,7 +2228,7 @@ index ed299289..2208adbf 100644
  
  	[[nodiscard]] const vk::PhysicalDeviceProperties& GetPhysicalDeviceProperties() const {
  		return physical_device_properties;
-@@ -242,6 +247,9 @@ struct GraphicContext {
+@@ -242,9 +251,15 @@ struct GraphicContext {
  	// KYTY_NATIVE_IMAGE_POOL_IDLE_MS (vma.cpp): destroys retained native images unused that long
  	// (GPU thread, from the garbage collector; rate-limited).
  	void                   TrimRetiredImages();
@@ -979,7 +2238,13 @@ index ed299289..2208adbf 100644
  	// An allocation failed for lack of device memory: destroys what is only retained for reuse
  	// (the native image pool) before the caller retries. Returns the bytes released.
  	uint64_t               ReleaseRetainedMemory();
-@@ -261,7 +269,10 @@ struct GraphicContext {
++	// Set by the texture cache: frees cached images not used for a few frames, up to the given bytes,
++	// when an allocation failed for lack of device memory. Returns the bytes freed (0 when busy).
++	std::function<uint64_t(uint64_t)> relieve_memory_pressure;
+ 	// KYTY_TEXTURE_SPARSE_RESIDENCY (sparse_residency_image_enabled): creates `info` as a sparse
+ 	// residency image with memory bound behind levels >= first_level only (a single-layer,
+ 	// single-sample 2D image whose format, usage and flags support sparse residency; false and
+@@ -261,7 +276,10 @@ struct GraphicContext {
  	// because sampled views span non-resident levels) access the levels being bound.
  	[[nodiscard]] bool     CreateSparseImage(const vk::ImageCreateInfo& info, uint32_t first_level,
  	                                         VulkanImage& image);
@@ -991,7 +2256,7 @@ index ed299289..2208adbf 100644
  	                                             vk::Semaphore wait_semaphore = nullptr,
  	                                             uint64_t      wait_value     = 0);
  	// The timeline semaphore image binds signal, and the newest value signalled by a bind that may
-@@ -297,6 +308,8 @@ private:
+@@ -297,6 +315,8 @@ private:
  	std::vector<RetiredNativeImage> m_retired_images;
  	uint64_t m_retired_image_bytes = 0;
  	std::chrono::steady_clock::time_point m_retired_trim_next {};
@@ -1000,7 +2265,7 @@ index ed299289..2208adbf 100644
  	mutable std::mutex                                 m_format_properties_mutex;
  	mutable std::map<vk::Format, vk::FormatProperties> m_format_properties;
  	mutable std::mutex                                 m_image_format_properties_mutex;
-@@ -345,6 +358,9 @@ struct VulkanImage {
+@@ -345,6 +365,9 @@ struct VulkanImage {
  		uint64_t                   block_size       = 0;
  		uint32_t                   memory_type_bits = 0;
  		uint64_t                   bytes            = 0;
@@ -2029,28 +3294,32 @@ index 689fcd79..62caba13 100644
  
  private:
 diff --git a/src/graphics/host_gpu/renderer/cache/textureCache.cpp b/src/graphics/host_gpu/renderer/cache/textureCache.cpp
-index aa95affc..e8e88183 100644
+index aa95affc..adef189d 100644
 --- a/src/graphics/host_gpu/renderer/cache/textureCache.cpp
 +++ b/src/graphics/host_gpu/renderer/cache/textureCache.cpp
-@@ -400,6 +400,9 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
+@@ -400,6 +400,12 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
        m_buffer_cache(buffer_cache),
        m_readback_linear_images(Config::ReadbackLinearImagesEnabled()),
        m_readback_tiled_images(Config::ReadbackTiledImagesEnabled()) {
 +	m_scheduler.SetMemoryPressureHook([](void* owner, uint64_t bytes) {
 +		return static_cast<TextureCache*>(owner)->RelieveMemoryPressure(bytes);
 +	}, this);
++	m_graphics.relieve_memory_pressure = [this](uint64_t bytes) {
++		return RelieveMemoryPressure(bytes);
++	};
  	m_image_page_counts = std::make_unique<std::atomic<uint32_t>[]>(
  	    size_t {1} << (ImagePageTable::kAddressSpaceBits - ImagePageTable::kPageBits));
  	m_fault_fast_path = EnvNotZero("KYTY_TEXTURE_FAULT_FAST_PATH");
-@@ -629,6 +632,7 @@ StreamBuffer& TextureCache::StagingRing() {
+@@ -629,6 +635,8 @@ StreamBuffer& TextureCache::StagingRing() {
  }
  
  TextureCache::~TextureCache() {
 +	m_scheduler.SetMemoryPressureHook(nullptr, nullptr);
++	m_graphics.relieve_memory_pressure = nullptr;
  	if (m_staging_copier) {
  		// The scheduler has drained by now; no later submission may wait on the copier.
  		m_scheduler.SetSubmitDependency(nullptr);
-@@ -834,13 +838,12 @@ uint64_t TextureCache::ResidentPrefixSize(const ImageInfo& info, uint32_t first_
+@@ -834,13 +842,12 @@ uint64_t TextureCache::ResidentPrefixSize(const ImageInfo& info, uint32_t first_
  	return end;
  }
  
@@ -2066,7 +3335,7 @@ index aa95affc..e8e88183 100644
  	}
  	// The GPU wait must never precede its signal (queueSubmission.h): hand every older tick to the
  	// driver first, as BufferCache's side readbacks do (KYTY_CP_RECORDER ring, submission broker).
-@@ -851,7 +854,7 @@ void TextureCache::BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_l
+@@ -851,7 +858,7 @@ void TextureCache::BindSparseLevelsAfterSubmitted(Image& image, uint32_t first_l
  		Common::LockGuard lock(m_graphics.queue_mutex);
  		m_graphics.submission_queue.DrainThroughLocked(progress.get(), previous);
  	}
@@ -2075,7 +3344,7 @@ index aa95affc..e8e88183 100644
  }
  
  void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampling) {
-@@ -862,6 +865,16 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
+@@ -862,6 +869,16 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
  	++m_lookup_side_effects;
  	const auto prefix    = ResidentPrefixSize(image.info, first_level);
  	const auto new_first = prefix != 0 ? first_level : 0u;
@@ -2092,7 +3361,7 @@ index aa95affc..e8e88183 100644
  	// The registered range grows. For everything keyed on the page owner index (clean-page
  	// proofs, lookups, binding identity caches) this is an unregister and a register.
  	const bool registered = image.registered;
-@@ -873,15 +886,6 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
+@@ -873,15 +890,6 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
  	NoteImageStateChange();
  	image.live = new_first != 0 ? GuestRange {image.info.data.address, prefix} : image.info.data;
  	NoteImageStateChange();
@@ -2108,7 +3377,7 @@ index aa95affc..e8e88183 100644
  	if (registered) {
  		RegisterImage(id);
  	}
-@@ -5446,7 +5450,7 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
+@@ -5446,7 +5454,7 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
  	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
  	const TileManager::ScratchHold scratch_hold(m_tiler);
  	if (!AliasBytesEnabled() || range.Empty() || !m_scheduler.Active() ||
@@ -2117,7 +3386,7 @@ index aa95affc..e8e88183 100644
  		return 0;
  	}
  	struct Owner {
-@@ -6006,6 +6010,9 @@ void TextureCache::NotePendingWritebackCpuWrite(uint64_t address, uint64_t size)
+@@ -6006,6 +6014,9 @@ void TextureCache::NotePendingWritebackCpuWrite(uint64_t address, uint64_t size)
  
  void TextureCache::WriteBackImageBytes(GuestRange range, const uint8_t* data,
                                         const std::shared_ptr<PendingWriteback>& pending) {
@@ -2127,7 +3396,31 @@ index aa95affc..e8e88183 100644
  	if (pending == nullptr) {
  		LibKernel::Memory::WriteBacking(range.address, data, range.size);
  		return;
-@@ -6633,6 +6640,28 @@ bool TextureCache::KeptIdlePool(const Image& image) const {
+@@ -6568,17 +6579,15 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
+ 	}
+ }
+ 
+-bool TextureCache::IdleRetirable(const Image& image, uint64_t frame, uint64_t min_age) const {
++bool TextureCache::IdleRetirable(const Image& image, uint64_t frame, uint64_t min_age,
++                                 bool allow_stale_gpu) const {
+ 	// What the submission-age collector frees without a download: clean of GPU writes (the guest
+ 	// bytes or the buffer cache hold the contents, a later use recreates and refreshes it), and
+ 	// not a stencil association, a bound resource, a render target or a presentation surface.
+-	// GPU-written images stay however long they go unused (chenxiao07/KytyPS5 45beec32a frees them
+-	// after 600 flips): their native contents are the only copy of what the GPU rendered (guest
+-	// memory holds older bytes; a tiled image has no download path, and KYTY_ALIAS_BYTES would only
+-	// move the bytes into a cache buffer of the same size). An age says nothing about a later read:
+-	// a probe or impostor rendered once and sampled minutes later would come back as stale guest
+-	// bytes. Freeing them needs a download into guest memory first, not an age.
+-	return image.registered && !image.depth_id && !image.IsGpuModified() &&
++	// GPU-written images stay during normal GC, except during emergency OOM relief
++	// (allow_stale_gpu=true, #114) where unbound render/depth/storage targets unused for >=600
++	// frames are evicted rather than crashing with ErrorOutOfDeviceMemory.
++	return image.registered && !image.depth_id && (allow_stale_gpu || !image.IsGpuModified()) &&
+ 	       !image.binding.is_bound && !image.binding.is_target && !image.usage.video_out &&
+ 	       frame - std::min(frame, image.frame_accessed_last) > min_age;
+ }
+@@ -6633,8 +6642,45 @@ bool TextureCache::KeptIdlePool(const Image& image) const {
  	return big_budget;
  }
  
@@ -2141,12 +3434,27 @@ index aa95affc..e8e88183 100644
 +	if (!lock.owns_lock()) {
 +		return 0;
 +	}
-+	const auto freed = RetireUnusedImages(m_frame.load(std::memory_order_relaxed), 2, 4096, bytes);
++	const auto frame           = m_frame.load(std::memory_order_relaxed);
++	uint64_t   freed           = RetireUnusedImages(frame, 2, 4096, bytes);
++	uint64_t   stale_gpu_freed = 0;
++	if (freed < bytes) {
++		// Emergency OOM relief (#114): when clean images were not enough, evict unbound
++		// GPU-modified render/depth/storage targets unused for >= 600 frames rather than
++		// failing the allocation with ErrorOutOfDeviceMemory.
++		stale_gpu_freed = RetireUnusedImages(frame, 600, 256, bytes - freed, false, true);
++		freed += stale_gpu_freed;
++	}
 +	lock.unlock();
 +	if (freed != 0) {
 +		static std::atomic<uint32_t> reported {0};
 +		if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
-+			std::printf("Kyty VRAM: evicted %" PRIu64 " MiB of unused images to make room\n", freed >> 20u);
++			if (stale_gpu_freed != 0) {
++				std::printf("Kyty VRAM: evicted %" PRIu64 " MiB of unused images (%" PRIu64
++				            " MiB stale targets) to make room\n",
++				            freed >> 20u, stale_gpu_freed >> 20u);
++			} else {
++				std::printf("Kyty VRAM: evicted %" PRIu64 " MiB of unused images to make room\n", freed >> 20u);
++			}
 +			std::fflush(stdout);
 +		}
 +	}
@@ -2154,10 +3462,31 @@ index aa95affc..e8e88183 100644
 +}
 +
  uint64_t TextureCache::RetireUnusedImages(uint64_t frame, uint64_t min_age, size_t max_count,
-                                           uint64_t enough, bool idle_pass) {
+-                                          uint64_t enough, bool idle_pass) {
++                                          uint64_t enough, bool idle_pass, bool allow_stale_gpu) {
  	if (frame <= min_age) {
+ 		return 0;
+ 	}
+@@ -6653,7 +6699,7 @@ uint64_t TextureCache::RetireUnusedImages(uint64_t frame, uint64_t min_age, size
+ 	// LRU head) are passed over, not counted as deletions.
+ 	m_lru_cache.ForEachItemBelow(limit_tick, [&](ImageId id) {
+ 		const auto* image = m_slot_images.try_get(id);
+-		if (image != nullptr && IdleRetirable(*image, frame, min_age) &&
++		if (image != nullptr && IdleRetirable(*image, frame, min_age, allow_stale_gpu) &&
+ 		    !(idle_pass && KeptIdlePool(*image))) {
+ 			candidates.push_back(id);
+ 		}
+@@ -6666,7 +6712,7 @@ uint64_t TextureCache::RetireUnusedImages(uint64_t frame, uint64_t min_age, size
+ 		}
+ 		// Freeing a depth image frees its stencil associations: check again.
+ 		const auto* image = m_slot_images.try_get(id);
+-		if (image == nullptr || !IdleRetirable(*image, frame, min_age)) {
++		if (image == nullptr || !IdleRetirable(*image, frame, min_age, allow_stale_gpu)) {
+ 			continue;
+ 		}
+ 		freed += image->AccountedSize();
 diff --git a/src/graphics/host_gpu/renderer/cache/textureCache.h b/src/graphics/host_gpu/renderer/cache/textureCache.h
-index 3ca9f640..26a50f16 100644
+index 3ca9f640..30abdda8 100644
 --- a/src/graphics/host_gpu/renderer/cache/textureCache.h
 +++ b/src/graphics/host_gpu/renderer/cache/textureCache.h
 @@ -43,6 +43,9 @@ class RenderExecutor;
@@ -2188,6 +3517,22 @@ index 3ca9f640..26a50f16 100644
  	// Whole chain resident and refreshed now, before a non-sampling use records anything.
  	void                      RequireFullResidency(ImageId id);
  	void                      PoisonNonResidentLevels(Image& image);
+@@ -507,11 +512,13 @@ private:
+ 	// may not free), images unused for K frames are freed the same way, once per frame, oldest
+ 	// first, until usage is under the trigger (K/4, at least 2, above the critical mark).
+ 	// m_frame_ticks: the GC tick each recent frame began at (LRU ticks are GC ticks).
+-	[[nodiscard]] bool IdleRetirable(const Image& image, uint64_t frame, uint64_t min_age) const;
++	[[nodiscard]] bool IdleRetirable(const Image& image, uint64_t frame, uint64_t min_age,
++	                                 bool allow_stale_gpu = false) const;
+ 	void               NoteFrameTick(uint64_t frame, uint64_t tick);
+ 	// Returns the AccountedSize bytes freed (stops past `enough`).
+ 	uint64_t           RetireUnusedImages(uint64_t frame, uint64_t min_age, size_t max_count,
+-	                                      uint64_t enough, bool idle_pass = false);
++	                                      uint64_t enough, bool idle_pass = false,
++	                                      bool allow_stale_gpu = false);
+ 	// KYTY_VRAM_IDLE_KEEP_POOLS_MB=<n> (default 0: off): the idle pass (KYTY_VRAM_IDLE_FRAMES)
+ 	// passes over sampled-only one-level texture arrays of n MiB and more while the device budget
+ 	// is 12 GiB or more; pressure and budget collection still take them.
 diff --git a/src/graphics/host_gpu/renderer/cache/uploadDma.cpp b/src/graphics/host_gpu/renderer/cache/uploadDma.cpp
 index cbc17076..ee82c463 100644
 --- a/src/graphics/host_gpu/renderer/cache/uploadDma.cpp
@@ -5116,6 +6461,19 @@ index 5194b4bf..a1559173 100644
  	uint64_t          m_maybe_cpu_hash   = 0;
  	bool              m_cpu_dirty        = false;
  	bool              m_maybe_cpu_dirty  = false;
+diff --git a/src/graphics/host_gpu/renderer/image/imageView.cpp b/src/graphics/host_gpu/renderer/image/imageView.cpp
+index 427d022e..378c62f8 100644
+--- a/src/graphics/host_gpu/renderer/image/imageView.cpp
++++ b/src/graphics/host_gpu/renderer/image/imageView.cpp
+@@ -375,7 +375,7 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
+ 	usage.usage = is_storage ? vk::ImageUsageFlagBits::eStorage
+ 	                         : image.usage & ~vk::ImageUsageFlagBits::eStorage;
+ 	vk::ImageViewMinLodCreateInfoEXT min_lod {};
+-	if (normalized.min_lod != 0) {
++	if (normalized.min_lod != 0 && m_graphics.image_view_min_lod_enabled) {
+ 		min_lod.minLod = static_cast<float>(normalized.base_level) +
+ 		                 static_cast<float>(normalized.min_lod) / 256.0f;
+ 		usage.pNext    = &min_lod;
 diff --git a/src/graphics/host_gpu/renderer/pipeline/descriptorHeap.cpp b/src/graphics/host_gpu/renderer/pipeline/descriptorHeap.cpp
 index 5b69611b..50602a60 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/descriptorHeap.cpp
@@ -5416,7 +6774,7 @@ index e7fa0596..e3aa62c0 100644
  static bool RecorderDescriptorSetsEnabled() {
  	return g_recorder_descriptor_sets.On();
 diff --git a/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp b/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp
-index e1cf54f2..1133b8b9 100644
+index e1cf54f2..f64b80e9 100644
 --- a/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp
 +++ b/src/graphics/host_gpu/renderer/pipeline/pipelineCache.cpp
 @@ -1,3 +1,4 @@
@@ -5424,7 +6782,15 @@ index e1cf54f2..1133b8b9 100644
  #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
  #include "common/ramStats.h"
  
-@@ -71,6 +72,9 @@
+@@ -28,6 +29,7 @@
+ #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+ #include "graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.h"
+ #include "graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h"
++#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+ #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
+ #include "graphics/host_gpu/renderer/pipeline/pipelineLibrary.h"
+ #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
+@@ -71,6 +73,9 @@
  #include <memory>
  #include <mutex>
  #include <nlohmann/json.hpp>
@@ -5434,7 +6800,16 @@ index e1cf54f2..1133b8b9 100644
  #include <optional>
  #include <shared_mutex>
  #include <span>
-@@ -1738,6 +1742,7 @@ struct PipelineCache::ProgramCache {
+@@ -1400,6 +1405,8 @@ bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
+ 	});
+ 	spvtools::ValidatorOptions validator_options;
+ 	validator_options.SetAllowOffsetTextureOperand(maintenance8_enabled);
++	validator_options.SetUniformBufferStandardLayout(
++	    ShaderRecompiler::Spirv::GetHostBufferRobustness().uniform_dword_loads_return_zero);
+ 	if (tools.Validate(spirv.data(), spirv.size(), validator_options)) {
+ 		return true;
+ 	}
+@@ -1738,6 +1745,7 @@ struct PipelineCache::ProgramCache {
  	// push-data start) because CompileAndPublish appends only after an exclusive failed search,
  	// so a remembered permutation that matches is the one FindPermutation would return.
  	struct LookupMemo {
@@ -5442,7 +6817,7 @@ index e1cf54f2..1133b8b9 100644
  		ProgramKey         key;
  		const SourceEntry* source      = nullptr;
  		const Permutation* permutation = nullptr;
-@@ -1786,7 +1791,8 @@ struct PipelineCache::ProgramCache {
+@@ -1786,7 +1794,8 @@ struct PipelineCache::ProgramCache {
  	// FindSource through the per-thread memo of the key's stage.
  	const SourceEntry* FindSourceMemo(const ProgramKey& key, ProgramScratch& scratch) const {
  		auto* memo = LookupMemoEnabled() ? scratch.Memo(key.stage) : nullptr;
@@ -5452,7 +6827,7 @@ index e1cf54f2..1133b8b9 100644
  			Profiler::CountFrameEvent(Profiler::FrameEvent::ProgramSourceMemoHits);
  			return memo->source;
  		}
-@@ -1794,6 +1800,7 @@ struct PipelineCache::ProgramCache {
+@@ -1794,6 +1803,7 @@ struct PipelineCache::ProgramCache {
  		if (memo != nullptr) {
  			Profiler::CountFrameEvent(Profiler::FrameEvent::ProgramSourceMemoMisses);
  			if (source != nullptr) {
@@ -5460,7 +6835,7 @@ index e1cf54f2..1133b8b9 100644
  				memo->key.stage           = key.stage;
  				memo->key.hash            = key.hash;
  				memo->key.user_data_count = key.user_data_count;
-@@ -1813,7 +1820,8 @@ struct PipelineCache::ProgramCache {
+@@ -1813,7 +1823,8 @@ struct PipelineCache::ProgramCache {
  	                                       const ShaderRecompiler::IR::ResourceSpecialization& specialization,
  	                                       uint32_t push_data_cursor, ProgramScratch& scratch) const {
  		auto* memo = LookupMemoEnabled() ? scratch.Memo(stage) : nullptr;
@@ -5470,7 +6845,7 @@ index e1cf54f2..1133b8b9 100644
  		    PermutationMatches(*memo->permutation, specialization, push_data_cursor)) {
  			Profiler::CountFrameEvent(Profiler::FrameEvent::PermutationMemoHits);
  			return memo->permutation;
-@@ -1821,7 +1829,8 @@ struct PipelineCache::ProgramCache {
+@@ -1821,7 +1832,8 @@ struct PipelineCache::ProgramCache {
  		const auto* permutation = FindPermutation(source, specialization, push_data_cursor);
  		if (memo != nullptr) {
  			Profiler::CountFrameEvent(Profiler::FrameEvent::PermutationMemoMisses);
@@ -5480,7 +6855,7 @@ index e1cf54f2..1133b8b9 100644
  		}
  		return permutation;
  	}
-@@ -1883,6 +1892,26 @@ struct PipelineCache::ProgramCache {
+@@ -1883,6 +1895,26 @@ struct PipelineCache::ProgramCache {
  		return "";
  	}
  
@@ -5507,7 +6882,7 @@ index e1cf54f2..1133b8b9 100644
  	// One emitted permutation: what the persistent program cache stores and reloads.
  	struct EmittedProgram {
  		std::vector<uint32_t>                    spirv;
-@@ -1957,6 +1986,7 @@ struct PipelineCache::ProgramCache {
+@@ -1957,6 +1989,7 @@ struct PipelineCache::ProgramCache {
  			KYTY_PROFILER_BLOCK("Shader::CreateModule");
  			module = CompileSPV(emitted.spirv, device);
  		}
@@ -5515,7 +6890,7 @@ index e1cf54f2..1133b8b9 100644
  		g_shader_modules.Add(module, emitted.spirv);
  		times.module_ns = CompileClockNs() - module_begin;
  		EXIT_IF(module == nullptr);
-@@ -1982,6 +2012,8 @@ struct PipelineCache::ProgramCache {
+@@ -1982,6 +2015,8 @@ struct PipelineCache::ProgramCache {
  			}
  			const auto plain_module = CompileSPV(emitted.spirv_plain, device);
  			EXIT_IF(plain_module == nullptr);
@@ -5524,7 +6899,7 @@ index e1cf54f2..1133b8b9 100644
  			g_shader_modules.Add(plain_module, emitted.spirv_plain);
  			if (validator != nullptr) {
  				validator->Submit(options.dump_label, stage_name, options.shader_hash,
-@@ -2200,8 +2232,8 @@ struct PipelineCache::ProgramCache {
+@@ -2200,8 +2235,8 @@ struct PipelineCache::ProgramCache {
  	                               uint32_t push_data_cursor) {
  		const auto& layout = candidate.program.bindings;
  		return layout.push_data_start_dword ==
@@ -5535,7 +6910,7 @@ index e1cf54f2..1133b8b9 100644
  		       candidate.specialization == specialization;
  	}
  
-@@ -2243,7 +2275,7 @@ struct PipelineCache::ProgramCache {
+@@ -2243,7 +2278,7 @@ struct PipelineCache::ProgramCache {
  	                          StagePrep& prep, uint32_t& push_data_cursor) {
  		prep.permutation = &permutation;
  		input_info.stage = {.program = &permutation.program, .resources = &prep.resources};
@@ -5544,7 +6919,7 @@ index e1cf54f2..1133b8b9 100644
  		return permutation.handle;
  	}
  
-@@ -3373,6 +3405,8 @@ struct PipelineCache::ProgramCache {
+@@ -3373,6 +3408,8 @@ struct PipelineCache::ProgramCache {
  	                                      const ShaderJournal::Entry& entry,
  	                                      ShaderRecompiler::IR::ResourceSpecialization specialization) {
  		using Outcome = ShaderPrecompiler::Outcome;
@@ -5553,7 +6928,7 @@ index e1cf54f2..1133b8b9 100644
  		constexpr auto stored = ShaderStoredInputInfoSize<InputInfo>();
  		if (source.input_info.size() != stored) return Outcome::Skipped;
  		std::memcpy(static_cast<void*>(&input_info), source.input_info.data(), stored);
-@@ -3536,8 +3570,8 @@ struct PipelineCache::ProgramCache {
+@@ -3536,8 +3573,8 @@ struct PipelineCache::ProgramCache {
  				const auto* cached = PermutationAt(*source, source->reuse.current.permutation_index);
  				if (cached != nullptr &&
  				    cached->program.bindings.push_data_start_dword ==
@@ -5564,7 +6939,7 @@ index e1cf54f2..1133b8b9 100644
  					Profiler::CountFrameEvent(Profiler::FrameEvent::ResourceCachePermutationHits);
  					return Bind(*cached, input_info, prep, push_data_cursor);
  				}
-@@ -3787,8 +3821,8 @@ struct PipelineCache::ProgramCache {
+@@ -3787,8 +3824,8 @@ struct PipelineCache::ProgramCache {
  		return Result::Ok;
  	}
  
@@ -5575,7 +6950,7 @@ index e1cf54f2..1133b8b9 100644
  		if (Config::ShaderValidationEnabled() && SpirvValidator::AsyncEnabled()) {
  			validator = std::make_unique<SpirvValidator>();
  		}
-@@ -3830,8 +3864,13 @@ struct PipelineCache::ProgramCache {
+@@ -3830,8 +3867,13 @@ struct PipelineCache::ProgramCache {
  	size_t history_bytes = 0; // Guarded by m_reuse_mutex.
  	vk::Device                                                  device;
  	bool                                                        maintenance8_enabled = false;
@@ -5590,7 +6965,7 @@ index e1cf54f2..1133b8b9 100644
  	std::atomic<uint64_t> speculative_programs {0};
  	// Compiles in progress outside the lock and their completion signal (m_programs_mutex).
  	std::vector<InFlightCompile*> in_flight;
-@@ -4464,6 +4503,7 @@ struct PipelineCache::PrefetchState {
+@@ -4464,6 +4506,7 @@ struct PipelineCache::PrefetchState {
  		uint64_t compile_ns = 0;
  		// Keyed builds (the skip builder): the content identity, journaled when it is published.
  		GraphicsContent content;
@@ -5598,7 +6973,7 @@ index e1cf54f2..1133b8b9 100644
  	};
  	struct Pending {
  		std::future<Result> future;
-@@ -4486,14 +4526,18 @@ struct PipelineCache::PrefetchState {
+@@ -4486,14 +4529,18 @@ struct PipelineCache::PrefetchState {
  			if (!job.started->load(std::memory_order_acquire)) continue; // dropped by Stop
  			Result result = job.future.get();
  			if (result.pipeline == nullptr) continue;
@@ -5620,7 +6995,7 @@ index e1cf54f2..1133b8b9 100644
  	void Stop() {
  		{
  			std::lock_guard lock(mutex);
-@@ -4511,16 +4555,25 @@ struct PipelineCache::PrefetchState {
+@@ -4511,16 +4558,25 @@ struct PipelineCache::PrefetchState {
  		// Interface/resource arrays are copied. Compiled program metadata and shader modules
  		// are immutable and owned by ProgramCache until after Stop has joined every task.
  		auto task = std::make_shared<std::packaged_task<Result()>>(
@@ -5650,7 +7025,7 @@ index e1cf54f2..1133b8b9 100644
  					    const auto made   = cache.m_graphics.device.createGraphicsPipelines(
                              cache.m_driver_cache, 1, &info, nullptr, pipeline);
  					    if (made == vk::Result::eSuccess) cache.NoteKnownPipeline(result.content.key);
-@@ -4528,7 +4581,7 @@ struct PipelineCache::PrefetchState {
+@@ -4528,7 +4584,7 @@ struct PipelineCache::PrefetchState {
  				    };
  			    }
  			    CreatePipelineInternal(cache.m_graphics, *result.pipeline, key.rendering,
@@ -5659,7 +7034,7 @@ index e1cf54f2..1133b8b9 100644
  			                           pixel_copy ? &*pixel_copy : nullptr, programs,
  			                           key.static_params, cache.m_driver_cache,
  			                           keyed_hook ? &keyed_hook : nullptr);
-@@ -4537,11 +4590,11 @@ struct PipelineCache::PrefetchState {
+@@ -4537,11 +4593,11 @@ struct PipelineCache::PrefetchState {
  			    g_compile_totals.gfx_pipelines.fetch_add(1, std::memory_order_relaxed);
  			    g_compile_totals.gfx_pipeline_ns.fetch_add(result.compile_ns, std::memory_order_relaxed);
  			    HangTrace::RecordCompile({.kind = HangTrace::CompileKind::GraphicsPipeline,
@@ -5673,7 +7048,7 @@ index e1cf54f2..1133b8b9 100644
  			    return result;
  		    });
  		auto future = task->get_future();
-@@ -5394,6 +5447,7 @@ void PipelineCache::InitializeKnownPipelines() {
+@@ -5394,6 +5450,7 @@ void PipelineCache::InitializeKnownPipelines() {
  	// their identities.
  	m_program_cache->identify_modules = journal || list;
  	PipelineJournal::Settings settings;
@@ -5681,7 +7056,7 @@ index e1cf54f2..1133b8b9 100644
  	settings.background_writer = false;
  	settings.sealed_writes     = true;
  	settings.log               = [](const std::string& message) { PipelineCacheLog("{}", message); };
-@@ -5445,6 +5499,7 @@ void PipelineCache::InitializePipelineJournal() {
+@@ -5445,6 +5502,7 @@ void PipelineCache::InitializePipelineJournal() {
  			const auto  identity   = fmt::format("kyty pipeline journal 1; device {:08x}:{:08x}", properties.vendorID,
  			                                     properties.deviceID);
  			PipelineJournal::Settings settings;
@@ -5689,7 +7064,7 @@ index e1cf54f2..1133b8b9 100644
  			settings.path     = path;
  			settings.identity = std::vector<uint8_t>(identity.begin(), identity.end());
  			settings.log      = [](const std::string& message) { PipelineCacheLog("{}", message); };
-@@ -5571,7 +5626,7 @@ void PipelineCache::InitializePipelineList() {
+@@ -5571,7 +5629,7 @@ void PipelineCache::InitializePipelineList() {
  	const bool  prepare = EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0;
  	const bool  off     = setting == nullptr || *setting == '\0' || std::strcmp(setting, "0") == 0;
  	if (off && !prepare) return;
@@ -5698,7 +7073,7 @@ index e1cf54f2..1133b8b9 100644
  	if (title_id.empty()) return;
  	const auto begin = CompileClockNs();
  	const auto path  = off || std::strcmp(setting, "1") == 0
-@@ -5601,12 +5656,23 @@ void PipelineCache::InitializePipelineList() {
+@@ -5601,12 +5659,23 @@ void PipelineCache::InitializePipelineList() {
  	bytes = {};
  	std::string version;
  	(void)Loader::SystemContentParamSfoGetString("APP_VER", &version);
@@ -5723,7 +7098,7 @@ index e1cf54f2..1133b8b9 100644
  	std::ifstream code_file(executable, std::ios::binary);
  	if (executable.empty() || !code_file) {
  		PipelineCacheLog("Pipeline list: the game executable ({}) cannot be read: ignored",
-@@ -5680,12 +5746,19 @@ void PipelineCache::InitializePipelineList() {
+@@ -5680,12 +5749,19 @@ void PipelineCache::InitializePipelineList() {
  
  // KYTY_PIPELINE_LIST_PREPARE=1: waits for the shader replay, the pipeline replay, the compute prewarm
  // and the ray-tracing kernels, saves the caches and ends the process.
@@ -5745,7 +7120,7 @@ index e1cf54f2..1133b8b9 100644
  	}
  	PipelineCacheLog("Prepare shaders: building the pipeline list's shaders and pipelines");
  	if (m_shader_precompiler != nullptr) m_shader_precompiler->Wait();
-@@ -5704,8 +5777,7 @@ void PipelineCache::RunListPrepare() {
+@@ -5704,8 +5780,7 @@ void PipelineCache::RunListPrepare() {
  	                 static_cast<double>(CompileClockNs() - begin - shaders_ns) / 1e9, t.replayed.load(),
  	                 t.journal_built.load(), t.prewarm_built.load(), size,
  	                 size > MaxDriverCacheFileSize ? " (over the 512 MB file cap: the next start discards it)" : "");
@@ -5755,7 +7130,7 @@ index e1cf54f2..1133b8b9 100644
  }
  
  // KYTY_PIPELINE_STATS=1: the "Pipelines 10s" line (pipelineStats.h), from the process-wide compile
-@@ -5768,10 +5840,14 @@ struct PipelineCache::StatsReporter {
+@@ -5768,10 +5843,14 @@ struct PipelineCache::StatsReporter {
  	std::jthread                thread; // last: started once the rest is constructed
  };
  
@@ -5772,7 +7147,7 @@ index e1cf54f2..1133b8b9 100644
  	// Each cache counts its generations in its own range, so a per-thread lookup memo left by a
  	// destroyed cache can never match a later cache allocated at the same address (tests create
  	// several render contexts in one process).
-@@ -5781,7 +5857,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
+@@ -5781,7 +5860,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
  	InitializeDriverCache();
  	InitializePipelineList();
  	InitializeKnownPipelines();
@@ -5781,7 +7156,7 @@ index e1cf54f2..1133b8b9 100644
  		m_saver = std::make_unique<DriverCacheSaver>(*this);
  	}
  	InitializeProgramDiskCache();
-@@ -5807,16 +5883,20 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
+@@ -5807,16 +5886,20 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
  		} else {
  			m_fast_first = std::make_unique<FastFirstState>(*this);
  			PipelineCacheLog("Pipeline fast-first: new pipelines are built unoptimized and "
@@ -5805,7 +7180,7 @@ index e1cf54f2..1133b8b9 100644
  		const auto threads = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_PREFETCH_THREADS", 2), 1, 4);
  		m_prefetch = std::make_unique<PrefetchState>(*this, threads);
  		PipelineCacheLog("Pipeline prefetch: {} compile workers; draws always wait for their exact pipeline", threads);
-@@ -5831,7 +5911,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
+@@ -5831,7 +5914,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
  		                 threads, m_skip_wait_ns / 1000);
  	}
  	if (EnvU64("KYTY_PIPELINE_STATS", 0) != 0) m_stats_reporter = std::make_unique<StatsReporter>(*this);
@@ -5814,7 +7189,7 @@ index e1cf54f2..1133b8b9 100644
  }
  
  PipelineCache::~PipelineCache() {
-@@ -5996,6 +6076,7 @@ void PipelineCache::InitializeProgramDiskCache() {
+@@ -5996,6 +6079,7 @@ void PipelineCache::InitializeProgramDiskCache() {
  	// state that the emitter reads is part of the fingerprint already; the device and driver are
  	// named as well, so that no device-dependent input can be missed).
  	ProgramDiskCache::Settings settings;
@@ -5822,7 +7197,7 @@ index e1cf54f2..1133b8b9 100644
  	settings.path           = path;
  	settings.identity       = ShaderRecompiler::CodegenFingerprint();
  	settings.periodic_saves = EnvU64("KYTY_PROGRAM_CACHE_SAVE", 1) != 0;
-@@ -6238,7 +6319,7 @@ void PipelineCache::Save() {
+@@ -6238,7 +6322,7 @@ void PipelineCache::Save() {
  	if (m_saver != nullptr && m_saver->saved_created != 0 &&
  	    m_saver->created.load(std::memory_order_acquire) == m_saver->saved_created) {
  		PipelineCacheLog("Vulkan pipeline cache: no new pipelines since the last save");
@@ -5831,7 +7206,7 @@ index e1cf54f2..1133b8b9 100644
  		return;
  	}
  	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
-@@ -6284,6 +6365,7 @@ void PipelineCache::InitializeShaderPrecompile() {
+@@ -6284,6 +6368,7 @@ void PipelineCache::InitializeShaderPrecompile() {
  			}
  			path = std::filesystem::path("_PipelineCache") / (title_id + ".shaders.journal");
  		}
@@ -5839,7 +7214,7 @@ index e1cf54f2..1133b8b9 100644
  		// The identity holds what the stored inputs depend on besides the game: the device (subgroup
  		// and mesh limits are part of the stage input infos) and the sizes of the input structs. The
  		// translator is not part of it: the journal holds inputs, not outputs.
-@@ -6293,6 +6375,7 @@ void PipelineCache::InitializeShaderPrecompile() {
+@@ -6293,6 +6378,7 @@ void PipelineCache::InitializeShaderPrecompile() {
  	        properties.deviceID, ShaderStoredInputInfoSize<ShaderVertexInputInfo>(),
  	        ShaderStoredInputInfoSize<ShaderPixelInputInfo>(), ShaderStoredInputInfoSize<ShaderComputeInputInfo>());
  		ShaderJournal::Settings settings;
@@ -5847,7 +7222,7 @@ index e1cf54f2..1133b8b9 100644
  		settings.path     = path;
  		settings.identity = std::vector<uint8_t>(identity.begin(), identity.end());
  		settings.log      = [](const std::string& message) { PipelineCacheLog("{}", message); };
-@@ -6308,6 +6391,7 @@ void PipelineCache::InitializeShaderPrecompile() {
+@@ -6308,6 +6394,7 @@ void PipelineCache::InitializeShaderPrecompile() {
  		// The pipeline list alone: a journal object only to hold the replay's input (no file, and the
  		// program cache records nothing into it).
  		ShaderJournal::Settings settings;
@@ -5855,7 +7230,7 @@ index e1cf54f2..1133b8b9 100644
  		settings.background_writer = false;
  		m_shader_journal           = std::make_unique<ShaderJournal>(std::move(settings));
  	}
-@@ -6701,6 +6785,20 @@ static PipelineCache::GraphicsPrograms SkipUnmaterializable(const char* why) {
+@@ -6701,6 +6788,20 @@ static PipelineCache::GraphicsPrograms SkipUnmaterializable(const char* why) {
  	return {};
  }
  
@@ -5876,7 +7251,7 @@ index e1cf54f2..1133b8b9 100644
  PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
      const HW::VertexShaderInfo& vertex_regs, const HW::PixelShaderInfo& pixel_regs,
      const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
-@@ -6736,11 +6834,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
+@@ -6736,11 +6837,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
  	// The program cache locks internally, so no pipeline lock is held across materialization.
  	auto& scratch    = ProgramCache::ThreadScratch();
  	auto& evaluation = ShaderRecompiler::IR::ThreadEvaluationScratch();
@@ -5890,7 +7265,7 @@ index e1cf54f2..1133b8b9 100644
  	const auto serial = [&](std::array<ShaderVertexInputInfo, 3>& vertex_inputs,
  	                        ShaderPixelInputInfo& pixel_input,
  	                        GraphicsStagePreps& preps) -> GraphicsPrograms {
-@@ -6831,10 +6929,10 @@ PipelineCache::SpeculativeResult PipelineCache::PrepareGraphicsProgramsSpeculati
+@@ -6831,10 +6932,10 @@ PipelineCache::SpeculativeResult PipelineCache::PrepareGraphicsProgramsSpeculati
  		return SpeculativeResult::ReadFailed;
  	}
  	Common::PrepPhases::Mark(Common::PrepPhases::Phase::PsProgram);
@@ -5903,7 +7278,7 @@ index e1cf54f2..1133b8b9 100644
  	const bool compile_ahead = g_program_prefetch.On();
  	const auto result = m_program_cache->TryPrepareSpeculative(
  	    pixel_active, pixel_params, pixel_info, pixel_prep, vertex_params, vertex_info, vertex_prep,
-@@ -7327,7 +7425,7 @@ void PipelineCache::PrefetchGraphicsPipeline(std::span<const RenderColorInfo> co
+@@ -7327,7 +7428,7 @@ void PipelineCache::PrefetchGraphicsPipeline(std::span<const RenderColorInfo> co
      const RenderDepthInfo& depth, std::span<const ShaderVertexInputInfo> vertex_info,
      CommandBuffer& command, const ShaderPixelInputInfo* pixel_info,
      vk::PrimitiveTopology topology, bool primitive_restart_enable, const GraphicsPrograms& programs) {
@@ -5912,7 +7287,7 @@ index e1cf54f2..1133b8b9 100644
  	PipelineTargets targets;
  	targets.color_count = static_cast<uint32_t>(colors.size());
  	for (uint32_t i = 0; i < targets.color_count; i++) {
-@@ -7525,7 +7623,9 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+@@ -7525,7 +7626,9 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
  			wait_begin = 0;
  		}
  	}
@@ -5923,7 +7298,7 @@ index e1cf54f2..1133b8b9 100644
  	    topology != vk::PrimitiveTopology::ePatchList && !graphics_debug_dump_enabled()) {
  		{
  			Common::LockGuard lock(m_mutex);
-@@ -7534,7 +7634,8 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+@@ -7534,7 +7637,8 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
  			}
  			// Reserve the key before releasing the map. Other preparation threads may submit
  			// independent keys while this draw waits, allowing compiles to overlap each other.
@@ -5933,7 +7308,7 @@ index e1cf54f2..1133b8b9 100644
  		}
  		wait_begin = CompileClockNs();
  		ready = m_prefetch->Take(key);
-@@ -7543,9 +7644,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+@@ -7543,9 +7647,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
  	Common::LockGuard lock(m_mutex);
  	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
  		if (ready.pipeline != nullptr) {
@@ -5944,7 +7319,7 @@ index e1cf54f2..1133b8b9 100644
  			ready_from->Complete(key);
  		}
  		return remember(*iter->second);
-@@ -7573,7 +7672,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
+@@ -7573,7 +7675,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
  	// fast-link it and hand back the create info for the background optimized compile.
  	GraphicsPipelineLibrary::Result library_result;
  	GraphicsPipelineCreateHook      library_hook;
@@ -7262,7 +8637,7 @@ index 8d87a367..4953720e 100644
  	RenderExecutor            m_render_executor;
  	CommandScheduler          m_command_scheduler;
 diff --git a/src/graphics/host_gpu/renderer/renderDraw.cpp b/src/graphics/host_gpu/renderer/renderDraw.cpp
-index 25b4d339..fc4c3bfb 100644
+index 25b4d339..916e8e89 100644
 --- a/src/graphics/host_gpu/renderer/renderDraw.cpp
 +++ b/src/graphics/host_gpu/renderer/renderDraw.cpp
 @@ -38,6 +38,7 @@
@@ -7555,7 +8930,28 @@ index 25b4d339..fc4c3bfb 100644
  			m_key_diag.reason = DrawRun::KeyDiag::Inelig::Alias;
  			return;
  		}
-@@ -3834,6 +3891,10 @@ static void AuditGraphicsPushBudget(CpGaps::DrawPassSample& sample,
+@@ -3403,6 +3460,20 @@ static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo
+ 	                  draw.index_count, index_addr);
+ }
+ 
++static bool IsAbsurdDraw(uint32_t count, uint32_t instance_count, const char* kind) {
++	constexpr uint64_t kMaxVertexInvocations = 1ull << 30;
++	const uint64_t     invocations           = static_cast<uint64_t>(count) * instance_count;
++	if (invocations < kMaxVertexInvocations) [[likely]] {
++		return false;
++	}
++	static std::atomic<uint32_t> logged {0};
++	if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
++		std::fprintf(stderr, "Kyty draw guard: dropped absurd %s (%u x %u = %llu invocations)\n",
++		             kind, count, instance_count, static_cast<unsigned long long>(invocations));
++	}
++	return true;
++}
++
+ static void EmitDrawPrimitives(const HW::UserConfig& ucfg, const CommandSink& vk_buffer,
+                                const DrawCallInfo& draw, const DrawEmitInfo& emit) {
+ 	switch (ucfg.GetPrimType()) {
+@@ -3834,6 +3905,10 @@ static void AuditGraphicsPushBudget(CpGaps::DrawPassSample& sample,
                                      uint32_t reserved_dwords, uint32_t budget_bytes) {
  	uint32_t cursor = reserved_dwords;
  	const auto budget = std::min(budget_bytes / 4u, 64u);
@@ -7566,7 +8962,7 @@ index 25b4d339..fc4c3bfb 100644
  	uint64_t proposed_tables = 0;
  	uint64_t proposed_bytes = 0;
  	const auto measure = [&](const PreparedBindings& stage) {
-@@ -3859,9 +3920,9 @@ static void AuditGraphicsPushBudget(CpGaps::DrawPassSample& sample,
+@@ -3859,9 +3934,9 @@ static void AuditGraphicsPushBudget(CpGaps::DrawPassSample& sample,
  	for (const auto* stage: stages) {
  		measure(*stage);
  	}
@@ -7578,7 +8974,7 @@ index 25b4d339..fc4c3bfb 100644
  	                              static_cast<int64_t>(proposed_bytes);
  }
  
-@@ -3872,6 +3933,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -3872,6 +3947,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	                                     bool primitive_restart_enable) {
  	KYTY_GPU_OP_SITE("draw.execute");
  	KYTY_PROFILER_DETAIL_FUNCTION();
@@ -7586,7 +8982,7 @@ index 25b4d339..fc4c3bfb 100644
  	auto& ucfg = buffer.GetUserConfig();
  	if (m_context.GetOcclusionCounter().DebugLogActive()) {
  		OcclusionCounter::DebugLog("e n=%u inst=%u vs=0x%" PRIx64 "\n", draw.index_count, draw.instance_count,
-@@ -4091,7 +4153,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4091,7 +4167,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	                                      run_indirect_barrier))) {
  		const CommitStats::SubScope late_scope(CommitStats::Sub::LateFallback);
  		if (!targets_late) {
@@ -7595,7 +8991,7 @@ index 25b4d339..fc4c3bfb 100644
  			DrawRun::CountMiss(DrawRun::Miss::Images);
  		}
  		m_run_active = false;
-@@ -4156,13 +4218,38 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4156,13 +4232,38 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	// not compared.
  	if (m_run_verify && (!DrawRunCommandUnchanged(buffer) || !DrawRunImagesUnchanged(true) ||
  	                     run_indirect_barrier)) {
@@ -7635,7 +9031,7 @@ index 25b4d339..fc4c3bfb 100644
  	// ASTROHYBRID_DLSS (dlss.h): depth attachments by colour target, and the game's temporal
  	// upscale replaced by DLSS Super Resolution. A replaced draw records nothing else; like a
  	// skipped one (KYTY_PIPELINE_SKIP below) no run record may be continued across it.
-@@ -4183,6 +4270,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4183,6 +4284,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  			}
  			return;
  		}
@@ -7651,7 +9047,7 @@ index 25b4d339..fc4c3bfb 100644
  	}
  
  	// KYTY_LOD_STATS_PLAIN_VARIANT: without a mip-statistics counter on any image the pixel
-@@ -4194,7 +4290,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4194,7 +4304,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	if (state.ps_active && bindings.pixel.has_value()) {
  		const auto plain_mode = LodStatsCounter::PlainVariant();
  		const auto plain      = plain_mode != LodStatsCounter::Plain::Off
@@ -7660,7 +9056,7 @@ index 25b4d339..fc4c3bfb 100644
  		                            : ShaderProgram {};
  		if (plain) {
  			if (bindings.pixel->mip_stats_active) {
-@@ -4368,6 +4464,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4368,6 +4478,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  		}
  	}
  	CommitStats::StepMark(CommitStats::Step::BarrierSafe);
@@ -7668,7 +9064,7 @@ index 25b4d339..fc4c3bfb 100644
  	const CommandBuffer::DrawScope draw_scope(buffer, barrier_safe);
  	// Emission safe point (KYTY_CP_RECORDER): no native handle obtained during the preparation above
  	// is alive; from here the draw's commands go to the recorder (render.h, CommandBuffer::Sink).
-@@ -4439,7 +4536,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
+@@ -4439,7 +4550,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
  	                         (!m_context.GetGraphics().attachment_feedback_loop_enabled ||
  	                          (m_dynamic_state.feedback_valid && !m_dynamic_state.feedback));
  	if (m_run_active && !run_dynamic) {
@@ -7677,7 +9073,7 @@ index 25b4d339..fc4c3bfb 100644
  	}
  	const auto run_dynamic_emitted = g_dynamic_state_emitted;
  	if (!(m_run_active && run_dynamic)) {
-@@ -4870,7 +4967,10 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
+@@ -4870,12 +4981,16 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
  	// separately timed preparation/execution phases.
  	KYTY_PROFILER_DETAIL_BLOCK("Draw::SetupAndExecution");
  	CommitStats::StepMark(CommitStats::Step::DebugInfo);
@@ -7689,7 +9085,14 @@ index 25b4d339..fc4c3bfb 100644
  	CommitStats::StepMark(CommitStats::Step::Lock);
  	// KYTY_DRAW_RUN: only a draw that records through the eligible path seeds the next continuation.
  	BeginDrawRun();
-@@ -4954,7 +5054,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
+ 	CommitStats::StepMark(CommitStats::Step::BeginRun);
+-	if (args.index_count == 0 || args.instance_count == 0) {
++	if (args.index_count == 0 || args.instance_count == 0 ||
++	    IsAbsurdDraw(args.index_count, args.instance_count, "DrawIndex")) {
+ 		return;
+ 	}
+ 
+@@ -4954,7 +5069,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
  	const bool primitive_restart = ResolvePrimitiveRestart(buffer, index_source,
  	    MeshRestartEnabled() && state.vertex_info[0].stage.program->stage == ShaderType::Mesh);
  
@@ -7699,7 +9102,7 @@ index 25b4d339..fc4c3bfb 100644
  	if (index_source.guest_element_size == 1) {
  		EXIT_NOT_IMPLEMENTED(args.index_addr == nullptr);
  		const auto* src = static_cast<const uint8_t*>(args.index_addr);
-@@ -5023,7 +5124,10 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
+@@ -5023,12 +5139,16 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
  
  	KYTY_PROFILER_DETAIL_BLOCK("Draw::SetupAndExecution");
  	CommitStats::StepMark(CommitStats::Step::DebugInfo);
@@ -7711,6 +9114,13 @@ index 25b4d339..fc4c3bfb 100644
  	CommitStats::StepMark(CommitStats::Step::Lock);
  	// KYTY_DRAW_RUN: only a draw that records through the eligible path seeds the next continuation.
  	BeginDrawRun();
+ 	CommitStats::StepMark(CommitStats::Step::BeginRun);
+-	if (args.vertex_count == 0 || args.instance_count == 0) {
++	if (args.vertex_count == 0 || args.instance_count == 0 ||
++	    IsAbsurdDraw(args.vertex_count, args.instance_count, "DrawIndexAuto")) {
+ 		return;
+ 	}
+ 
 diff --git a/src/graphics/host_gpu/renderer/vulkanCallTiming.h b/src/graphics/host_gpu/renderer/vulkanCallTiming.h
 new file mode 100644
 index 00000000..35f730cd
@@ -7759,7 +9169,7 @@ index 00000000..35f730cd
 +}
 +} // namespace Libs::Graphics::VulkanCallTiming
 diff --git a/src/graphics/host_gpu/vma.cpp b/src/graphics/host_gpu/vma.cpp
-index a1bd8541..1d4482dc 100644
+index a1bd8541..5c42c5b1 100644
 --- a/src/graphics/host_gpu/vma.cpp
 +++ b/src/graphics/host_gpu/vma.cpp
 @@ -20,6 +20,7 @@
@@ -7782,7 +9192,47 @@ index a1bd8541..1d4482dc 100644
  namespace Libs::Graphics {
  
  namespace {
-@@ -122,6 +128,9 @@ std::chrono::milliseconds RetiredImageIdleLimit() {
+@@ -100,6 +106,39 @@ static bool ImageSystemMemoryFallbackEnabled() {
+ 	return enabled;
+ }
+ 
++// Short cooldown after an evicted VRAM image allocation still fails: avoids hammering the driver
++// and eviction lock on every texture during a VRAM pressure burst on 6-8 GB cards.
++static std::atomic<int64_t>  g_vram_image_cooldown_until_ns {0};
++static std::atomic<uint64_t> g_vram_image_cooldown_min_bytes {UINT64_MAX};
++
++static int64_t VramSteadyNowNs() {
++	return std::chrono::duration_cast<std::chrono::nanoseconds>(
++	           std::chrono::steady_clock::now().time_since_epoch())
++	    .count();
++}
++
++static bool InVramImageCooldown(uint64_t bytes) {
++	if (!ImageSystemMemoryFallbackEnabled()) return false;
++	const int64_t until = g_vram_image_cooldown_until_ns.load(std::memory_order_relaxed);
++	if (until == 0 || VramSteadyNowNs() >= until) return false;
++	return bytes >= g_vram_image_cooldown_min_bytes.load(std::memory_order_relaxed);
++}
++
++static void RecordVramImageCooldown(uint64_t bytes) {
++	constexpr int64_t kCooldownNs = 250ll * 1000ll * 1000ll;
++	const int64_t     now         = VramSteadyNowNs();
++	const int64_t     prev_until  = g_vram_image_cooldown_until_ns.load(std::memory_order_relaxed);
++	if (now >= prev_until) {
++		g_vram_image_cooldown_min_bytes.store(bytes, std::memory_order_relaxed);
++	} else {
++		uint64_t cur = g_vram_image_cooldown_min_bytes.load(std::memory_order_relaxed);
++		while (bytes < cur && !g_vram_image_cooldown_min_bytes.compare_exchange_weak(
++		                          cur, bytes, std::memory_order_relaxed)) {
++		}
++	}
++	g_vram_image_cooldown_until_ns.store(now + kCooldownNs, std::memory_order_relaxed);
++}
++
+ // KYTY_NATIVE_IMAGE_POOL_IDLE_MS=N (default 0: off): a retained native image that no create has
+ // reused for N ms is destroyed (TrimRetiredImages, from the garbage collector). The pool then holds
+ // what the current churn recycles instead of up to its whole limit of images retired in earlier
+@@ -122,6 +161,9 @@ std::chrono::milliseconds RetiredImageIdleLimit() {
  // with KYTY_VRAM_GC_BUDGET the image collector's trigger (it frees cached images there; holding
  // retired native images instead would only move the pressure).
  bool PoolPressure(const GraphicContext& graphics) {
@@ -7792,7 +9242,7 @@ index a1bd8541..1d4482dc 100644
  	if (!graphics.CanReportMemoryUsage()) {
  		return false;
  	}
-@@ -141,9 +150,10 @@ bool CanRecycleImage(const vk::ImageCreateInfo& info) {
+@@ -141,9 +183,10 @@ bool CanRecycleImage(const vk::ImageCreateInfo& info) {
  	       info.initialLayout == vk::ImageLayout::eUndefined && !(info.flags & ~allowed_flags);
  }
  
@@ -7805,7 +9255,7 @@ index a1bd8541..1d4482dc 100644
  }
  
  // KYTY_VMA_BUDGET_CACHE_MS=N (default 0 = off): VMA fetches the memory budget from the driver
-@@ -416,7 +426,14 @@ bool GraphicContext::CreateSparseImage(const vk::ImageCreateInfo& info, uint32_t
+@@ -416,7 +459,14 @@ bool GraphicContext::CreateSparseImage(const vk::ImageCreateInfo& info, uint32_t
  	image.subresource_states.clear();
  	image.pool_eligible    = false;
  	image.pool_create_info = vk::ImageCreateInfo {};
@@ -7821,7 +9271,7 @@ index a1bd8541..1d4482dc 100644
  	if (HangTrace::Enabled()) {
  		HangTrace::RecordNativeImage(true, false, static_cast<uint32_t>(sparse_info.format),
  		                             sparse_info.extent.width, sparse_info.extent.height,
-@@ -456,14 +473,36 @@ void GraphicContext::WaitSparseBinds() {
+@@ -456,14 +506,36 @@ void GraphicContext::WaitSparseBinds() {
  	RequireVulkanSuccess(device.waitSemaphores(&wait, UINT64_MAX), "wait for sparse image binds");
  }
  
@@ -7860,7 +9310,7 @@ index a1bd8541..1d4482dc 100644
  	}
  	// New levels: [first, end). Levels from tail_first on live in the mip tail, bound as a whole.
  	const auto end        = std::min(state.first_bound, levels);
-@@ -487,7 +526,7 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
+@@ -487,19 +559,60 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
  	bytes += tail_bytes;
  	if (bytes == 0) {
  		state.first_bound = first;
@@ -7869,8 +9319,16 @@ index a1bd8541..1d4482dc 100644
  	}
  	VkMemoryRequirements requirements {};
  	requirements.size           = bytes;
-@@ -497,9 +536,39 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
- 	create.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+ 	requirements.alignment      = state.block_size;
+ 	requirements.memoryTypeBits = state.memory_type_bits;
+ 	VmaAllocationCreateInfo create {};
+-	create.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++	if (InVramImageCooldown(bytes)) {
++		create.requiredFlags  = 0;
++		create.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++	} else {
++		create.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++	}
  	VmaAllocation     allocation = nullptr;
  	VmaAllocationInfo info {};
 -	RequireVulkanSuccess(static_cast<vk::Result>(
@@ -7889,7 +9347,13 @@ index a1bd8541..1d4482dc 100644
 +		// any memory type the image allows (system memory: slower to sample, but the game goes on).
 +		ReleaseRetainedMemory();
 +		result = allocate();
++		if (result != vk::Result::eSuccess && relieve_memory_pressure) {
++			if (relieve_memory_pressure(std::max<uint64_t>(64ull * 1024ull * 1024ull, bytes)) != 0) {
++				result = allocate();
++			}
++		}
 +		if (result != vk::Result::eSuccess && ImageSystemMemoryFallbackEnabled()) {
++			RecordVramImageCooldown(bytes);
 +			create.requiredFlags  = 0;
 +			create.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 +			result                = allocate();
@@ -7912,7 +9376,7 @@ index a1bd8541..1d4482dc 100644
  	EXIT_IF(info.offset % state.block_size != 0);
  	uint64_t offset = info.offset;
  	for (uint32_t level = first; level < std::min(end, tail_first); ++level) {
-@@ -568,12 +637,13 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
+@@ -568,12 +681,13 @@ void GraphicContext::BindSparseImageLevels(VulkanImage& image, uint32_t first_le
  	state.first_bound = first;
  	state.tail_bound |= need_tail;
  	VramStats::Note(VramStats::Kind::Image, true, static_cast<int64_t>(bytes));
@@ -7927,7 +9391,7 @@ index a1bd8541..1d4482dc 100644
  	}
  	Profiler::CountFrameEvent(Profiler::FrameEvent::NativeImagePoolRemovedBytes,
  	                          m_retired_image_bytes);
-@@ -592,8 +662,7 @@ uint64_t GraphicContext::ReleaseRetainedMemory() {
+@@ -592,8 +706,7 @@ uint64_t GraphicContext::ReleaseRetainedMemory() {
  }
  
  void GraphicContext::TrimRetiredImages() {
@@ -7937,7 +9401,7 @@ index a1bd8541..1d4482dc 100644
  		return;
  	}
  	// Called per garbage collection (every completed submission): look at most every 100 ms.
-@@ -602,12 +671,42 @@ void GraphicContext::TrimRetiredImages() {
+@@ -602,12 +715,42 @@ void GraphicContext::TrimRetiredImages() {
  		return;
  	}
  	m_retired_trim_next = now + std::chrono::milliseconds(100);
@@ -7981,7 +9445,7 @@ index a1bd8541..1d4482dc 100644
  		EXIT_IF(retired.bytes > m_retired_image_bytes);
  		m_retired_image_bytes -= retired.bytes;
  		Profiler::CountFrameEvent(Profiler::FrameEvent::NativeImagePoolRemovedBytes, retired.bytes);
-@@ -641,6 +740,20 @@ void GraphicContext::ReportVramStats() {
+@@ -641,6 +784,20 @@ void GraphicContext::ReportVramStats() {
  		return;
  	}
  	using VramStats::ToMiB;
@@ -8002,7 +9466,7 @@ index a1bd8541..1d4482dc 100644
  	const auto& properties = GetPhysicalDeviceMemoryProperties();
  	VmaBudget   budgets[VK_MAX_MEMORY_HEAPS] {};
  	vmaGetHeapBudgets(allocator, budgets);
-@@ -809,25 +922,41 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
+@@ -809,31 +966,69 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
  		VmaAllocationCreateInfo alloc_info {};
  		alloc_info.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
  		auto allocate = [&] {
@@ -8035,6 +9499,15 @@ index a1bd8541..1d4482dc 100644
 +			return r == vk::Result::eErrorOutOfDeviceMemory || r == vk::Result::eErrorOutOfHostMemory ||
 +			       r == vk::Result::eErrorFragmentedPool || r == vk::Result::eErrorFragmentation;
 +		};
++		const uint64_t est_image_bytes =
++		    static_cast<uint64_t>(image_info.extent.width) * image_info.extent.height *
++		    std::max<uint32_t>(1u, image_info.extent.depth) *
++		    std::max<uint32_t>(1u, image_info.arrayLayers) * 4ull;
++		if (alloc_info.requiredFlags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT &&
++		    InVramImageCooldown(est_image_bytes)) {
++			alloc_info.requiredFlags  = 0;
++			alloc_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++		}
  		auto result = allocate();
 -		if (result == vk::Result::eErrorOutOfDeviceMemory && NativeImagePoolEnabled()) {
 +		if (memory_failure(result) && NativeImagePoolEnabled()) {
@@ -8043,11 +9516,30 @@ index a1bd8541..1d4482dc 100644
  			result = allocate();
  		}
 -		if (result == vk::Result::eErrorOutOfDeviceMemory && ImageSystemMemoryFallbackEnabled()) {
++		if (memory_failure(result) && relieve_memory_pressure) {
++			const uint64_t approx_bytes = std::max<uint64_t>(64ull * 1024ull * 1024ull, est_image_bytes);
++			if (relieve_memory_pressure(approx_bytes) != 0) {
++				result = allocate();
++			}
++		}
 +		if (memory_failure(result) && ImageSystemMemoryFallbackEnabled()) {
  			// From chenxiao07/KytyPS5 86910c0d2: out of video memory, the image goes to any memory
  			// type the driver allows for it (NVIDIA: system memory for optimal images). Slower to
  			// sample, but the game goes on instead of ending at "failed to create image".
-@@ -847,6 +976,10 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
++			RecordVramImageCooldown(est_image_bytes);
+ 			alloc_info.requiredFlags  = 0;
+ 			alloc_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+ 			result                    = allocate();
++			if (memory_failure(result)) {
++				// Second fallback (#114): drop the device-local preference completely so VMA
++				// allocates directly in host-visible system memory instead of failing OOM.
++				alloc_info.preferredFlags = 0;
++				result                    = allocate();
++			}
+ 			static std::atomic<uint32_t> reported {0};
+ 			if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+ 				std::fprintf(stderr, "Vulkan: video memory full, %s: %ux%ux%u format=%d layers=%u levels=%u "
+@@ -847,6 +1042,10 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
  			}
  		}
  		if (result != vk::Result::eSuccess) {
@@ -8058,7 +9550,7 @@ index a1bd8541..1d4482dc 100644
  			LogMemoryBudget();
  			return false;
  		}
-@@ -941,7 +1074,7 @@ void GraphicContext::DeleteImage(VulkanImage& image) {
+@@ -941,7 +1140,7 @@ void GraphicContext::DeleteImage(VulkanImage& image) {
  				       (m_retired_images.size() >= count_limit ||
  				        bytes > byte_limit - m_retired_image_bytes)) {
  					const auto oldest = m_retired_images.front();
@@ -8067,7 +9559,7 @@ index a1bd8541..1d4482dc 100644
  					m_retired_image_bytes -= oldest.bytes;
  					Profiler::CountFrameEvent(Profiler::FrameEvent::NativeImagePoolRemovedBytes,
  					                          oldest.bytes);
-@@ -957,7 +1090,7 @@ void GraphicContext::DeleteImage(VulkanImage& image) {
+@@ -957,7 +1156,7 @@ void GraphicContext::DeleteImage(VulkanImage& image) {
  		}
  	}
  	if (!retained) {
@@ -8076,6 +9568,30 @@ index a1bd8541..1d4482dc 100644
  	}
  	image.image      = nullptr;
  	image.allocation = nullptr;
+diff --git a/src/graphics/host_gpu/vulkanCommon.cpp b/src/graphics/host_gpu/vulkanCommon.cpp
+index 35a26c3e..3bc6766d 100644
+--- a/src/graphics/host_gpu/vulkanCommon.cpp
++++ b/src/graphics/host_gpu/vulkanCommon.cpp
+@@ -9,6 +9,7 @@
+ #include "graphics/host_gpu/graphicContext.h"
+ #include "graphics/host_gpu/spirvLocalArrays.h"
+ #include "graphics/host_gpu/vramStats.h"
++#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+ 
+ #include <spirv-tools/libspirv.hpp>
+ 
+@@ -220,7 +221,10 @@ std::vector<uint32_t> ShrinkFunctionArrays(std::span<const uint32_t> code, uint6
+ 			messages += "; ";
+ 		}
+ 	});
+-	const bool valid = tools.Validate(shrunk);
++	spvtools::ValidatorOptions validator_options;
++	validator_options.SetUniformBufferStandardLayout(
++	    ShaderRecompiler::Spirv::GetHostBufferRobustness().uniform_dword_loads_return_zero);
++	const bool valid = tools.Validate(shrunk.data(), shrunk.size(), validator_options);
+ 	static std::mutex                   log_mutex;
+ 	static std::set<std::string>        logged;
+ 	std::string                         arrays;
 diff --git a/src/graphics/presentation/astroEyeResolution.h b/src/graphics/presentation/astroEyeResolution.h
 new file mode 100644
 index 00000000..0e196bf6
@@ -10306,6 +11822,170 @@ index 6111ea3b..4800599f 100644
  } // namespace Libs::Vr
  
  #endif // EMULATOR_SRC_GRAPHICS_PRESENTATION_OPENXRHEADSET_H_
+diff --git a/src/graphics/presentation/performanceOverlay.cpp b/src/graphics/presentation/performanceOverlay.cpp
+index 1b784f95..c2c90591 100644
+--- a/src/graphics/presentation/performanceOverlay.cpp
++++ b/src/graphics/presentation/performanceOverlay.cpp
+@@ -308,6 +308,115 @@ void TransferRow(const Snapshot& shown, const char* label, Counter upload, Count
+ 	    Throughput(Rate(shown, upload)) + " up / " + Throughput(Rate(shown, download)) + " down");
+ }
+ 
++// ImGui's default font covers Latin-1, so the degree sign is drawn.
++constexpr const char* DEGREES_C = "\xC2\xB0"
++                                  "C";
++
++std::string Temperature(const Common::HostStats& host) {
++	if (!host.gpu_temperature_c) {
++		return "n/a";
++	}
++	return Fmt("%.0f%s%s", *host.gpu_temperature_c, DEGREES_C,
++	           host.gpu_temperature_is_soc ? " (SoC, ACPI)" : "");
++}
++
++// "45%  1850 MHz  12.3 W  68 C": the GPU line of the compact panel.
++std::string GpuSummary(const Common::HostStats& host) {
++	std::string text = Percent(host.gpu_percent);
++	if (host.gpu_clock_mhz) {
++		text += Fmt("  %.0f MHz", *host.gpu_clock_mhz);
++	}
++	if (host.gpu_power_w) {
++		text += Fmt("  %.1f W", *host.gpu_power_w);
++	}
++	if (host.gpu_temperature_c) {
++		text += Fmt("  %.0f%s%s", *host.gpu_temperature_c, DEGREES_C,
++		            host.gpu_temperature_is_soc ? " SoC" : "");
++	}
++	return text;
++}
++
++std::string GpuDevice(const Common::HostStats& host, const GraphicContext& graphics) {
++	std::string text = host.gpu_model.empty()
++	                       ? std::string(graphics.GetPhysicalDeviceProperties().deviceName.data())
++	                       : host.gpu_model;
++	std::string details = host.gpu_kind;
++	if (host.gpu_cores) {
++		details += Fmt("%s%u %s", details.empty() ? "" : ", ", *host.gpu_cores,
++		               host.gpu_core_name.empty() ? "cores" : host.gpu_core_name.c_str());
++	}
++	return details.empty() ? text : text + " (" + details + ")";
++}
++
++// Windows (hostGpuWindows.cpp): utilization by engine kind, clock, power, temperature.
++void GpuHostRows(const Common::HostStats& host) {
++	if (!host.gpu_driver.empty()) {
++		Row("Driver", (host.gpu_vendor.empty() ? std::string() : host.gpu_vendor + " ") + host.gpu_driver);
++	}
++	std::string engines;
++	const auto  engine = [&](const char* name, const std::optional<double>& percent) {
++		if (percent) {
++			engines += Fmt("%s%s %.0f%%", engines.empty() ? "" : "  ", name, *percent);
++		}
++	};
++	engine("3D", host.gpu_3d_percent);
++	engine("Compute", host.gpu_compute_percent);
++	engine("Copy", host.gpu_copy_percent);
++	engine("Video", host.gpu_video_percent);
++	if (!engines.empty()) {
++		Row("Engines", engines);
++	}
++	if (host.gpu_process_percent) {
++		Row("Emulator's share", Percent(host.gpu_process_percent));
++	}
++	if (host.gpu_clock_mhz || host.gpu_max_clock_mhz) {
++		std::string clock = host.gpu_clock_mhz ? Fmt("%.0f", *host.gpu_clock_mhz) : std::string("n/a");
++		clock += host.gpu_max_clock_mhz ? Fmt(" / %.0f MHz", *host.gpu_max_clock_mhz) : std::string(" MHz");
++		if (!host.gpu_throttle.empty()) {
++			clock += "  limited: " + host.gpu_throttle;
++		}
++		Row("Clock", clock, host.gpu_throttle.empty() ? std::nullopt : std::optional(MEDIUM));
++	}
++	if (host.gpu_power_w || host.gpu_power_percent) {
++		std::string power = host.gpu_power_w ? Fmt("%.1f W", *host.gpu_power_w) : std::string();
++		if (host.gpu_power_percent) {
++			power += Fmt("%s%.0f%% of limit", power.empty() ? "" : "  ", *host.gpu_power_percent);
++		}
++		Row("Power", power);
++	}
++	if (host.gpu_temperature_c) {
++		Row("Temperature", Temperature(host), LevelColor(*host.gpu_temperature_c, 80, 90));
++	}
++	if (host.gpu_fan_rpm) {
++		Row("Fan", Fmt("%u RPM", *host.gpu_fan_rpm));
++	}
++}
++
++// Windows: the device's dedicated and shared memory, and the emulator's own.
++void GpuHostMemoryRows(const Common::HostStats& host) {
++	const auto used_of = [](std::optional<uint64_t> used, std::optional<uint64_t> total) {
++		return total ? Bytes(used) + " / " + Bytes(*total) : Bytes(used);
++	};
++	const auto share = [](std::optional<uint64_t> used, std::optional<uint64_t> total) {
++		return used && total && *total != 0
++		           ? std::optional(LevelColor(static_cast<double>(*used) / static_cast<double>(*total) * 100.0, 80, 95))
++		           : std::nullopt;
++	};
++	// An integrated GPU has (almost) no dedicated memory: everything is shared system RAM.
++	if (host.gpu_dedicated_used && (host.gpu_kind != "integrated" || *host.gpu_dedicated_used != 0)) {
++		Row("Dedicated (VRAM)", used_of(host.gpu_dedicated_used, host.gpu_dedicated_total),
++		    share(host.gpu_dedicated_used, host.gpu_dedicated_total));
++	}
++	if (host.gpu_shared_used) {
++		Row("Shared (system RAM)", used_of(host.gpu_shared_used, host.gpu_shared_total),
++		    share(host.gpu_shared_used, host.gpu_shared_total));
++	}
++	if (host.gpu_process_dedicated || host.gpu_process_shared) {
++		Row("Emulator on GPU", Bytes(host.gpu_process_dedicated.value_or(0)) + " dedicated + " +
++		                           Bytes(host.gpu_process_shared.value_or(0)) + " shared");
++	}
++}
++
+ void GpuActivityRows(const Snapshot& shown) {
+ 	const auto draws = Rate(shown, Counter::Draws);
+ 	Row("Draw calls", Fmt("%.0f/frame  %.0f/s", draws / std::max(shown.fps, 1.0), draws));
+@@ -388,12 +497,18 @@ void DrawCompact(const Snapshot& shown) {
+ 	Row("CPU", host.process_cpu_percent
+ 	               ? Fmt("%.0f%%  of %u threads", *host.process_cpu_percent, host.logical_cores)
+ 	               : std::string("n/a"));
+-	Row("GPU", Percent(host.gpu_percent));
++	Row("GPU", GpuSummary(host),
++	    host.gpu_percent ? std::optional(LevelColor(*host.gpu_percent, 80, 95)) : std::nullopt);
+ 	GpuActivityRows(shown);
+ 	CompilationRows(shown);
+ 	if (shown.device_memory) {
+ 		Row("GPU memory", Bytes(*shown.device_memory) + " / " + Bytes(shown.device_budget));
+ 	}
++	if (host.gpu_kind == "integrated" && host.gpu_shared_used) {
++		Row("GPU shared RAM", host.gpu_shared_total
++		                          ? Bytes(*host.gpu_shared_used) + " / " + Bytes(*host.gpu_shared_total)
++		                          : Bytes(*host.gpu_shared_used));
++	}
+ 	TransferRow(shown, "Texture transfers", Counter::TextureUploadBytes,
+ 	            Counter::TextureDownloadBytes);
+ 	TransferRow(shown, "Buffer transfers", Counter::BufferUploadBytes,
+@@ -467,13 +582,10 @@ void DrawFramesAndCpu(const Snapshot& shown, vk::Extent2D extent) {
+ void DrawGpu(const Snapshot& shown, const GraphicContext& graphics) {
+ 	const auto& host = shown.host;
+ 	if (BeginSection("GPU")) {
+-		Row("Device", host.gpu_model.empty()
+-		                  ? std::string(graphics.GetPhysicalDeviceProperties().deviceName.data())
+-		              : host.gpu_cores
+-		                  ? Fmt("%s (%u cores)", host.gpu_model.c_str(), *host.gpu_cores)
+-		                  : host.gpu_model);
++		Row("Device", GpuDevice(host, graphics));
+ 		Row("Utilization", Percent(host.gpu_percent),
+ 		    host.gpu_percent ? std::optional(LevelColor(*host.gpu_percent, 80, 95)) : std::nullopt);
++		GpuHostRows(host);
+ 		if (host.gpu_renderer_percent || host.gpu_tiler_percent) {
+ 			Row("Renderer / tiler",
+ 			    Percent(host.gpu_renderer_percent) + " / " + Percent(host.gpu_tiler_percent));
+@@ -499,6 +611,7 @@ void DrawGpu(const Snapshot& shown, const GraphicContext& graphics) {
+ 		ImGui::EndTable();
+ 	}
+ 	if (BeginSection("GPU memory")) {
++		GpuHostMemoryRows(host);
+ 		if (shown.device_memory) {
+ 			const double share = shown.device_budget != 0
+ 			                         ? static_cast<double>(*shown.device_memory) /
 diff --git a/src/graphics/presentation/physicsFaultCapture.h b/src/graphics/presentation/physicsFaultCapture.h
 new file mode 100644
 index 00000000..26bbdc11
@@ -10582,8 +12262,28 @@ index 00000000..f28d6af9
 +}
 +
 +} // namespace Libs::Vr
+diff --git a/src/graphics/presentation/systemOverlay.cpp b/src/graphics/presentation/systemOverlay.cpp
+index 807ca52b..4f167529 100644
+--- a/src/graphics/presentation/systemOverlay.cpp
++++ b/src/graphics/presentation/systemOverlay.cpp
+@@ -627,6 +627,15 @@ PFN_vkVoidFunction LoadVulkanFunction(const char* name, void* user_data) {
+ }
+ 
+ void CheckVulkanResult(VkResult result) {
++	if (result >= 0) {
++		return;
++	}
++	Log::WriteToConsoleAndLog(fmt::format("SystemOverlay Vulkan error: {} ({})\n",
++	                                      vk::to_string(static_cast<vk::Result>(result)),
++	                                      static_cast<int>(result)));
++	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
++		return;
++	}
+ 	EXIT_IF(result != VK_SUCCESS);
+ }
+ 
 diff --git a/src/graphics/presentation/videoOut.cpp b/src/graphics/presentation/videoOut.cpp
-index 3f17232a..e71212c8 100644
+index 3f17232a..2da039c8 100644
 --- a/src/graphics/presentation/videoOut.cpp
 +++ b/src/graphics/presentation/videoOut.cpp
 @@ -30,6 +30,7 @@
@@ -10607,7 +12307,52 @@ index 3f17232a..e71212c8 100644
  
  namespace {
  
-@@ -1045,16 +1052,37 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
+@@ -934,6 +941,8 @@ struct GameStep {
+ 	uint64_t  last  = 0;
+ };
+ 
++std::atomic<bool> g_fixed_physics_step {false};
++
+ // ASTROHYBRID_GAME_SPEED=1 (default off): Astro Bot advances a fixed 1/FrameRate per frame from one
+ // global (eboot 0x8ff0040: f64 frame rate, f32 1/rate, u64 microseconds per frame; image +0x400000),
+ // so below 60 FPS the game runs in slow motion (30 FPS = half speed). With the switch on, every
+@@ -985,11 +994,21 @@ void UpdateGameStep(GameStep& step, uint64_t now, uint64_t frequency, uint32_t l
+ 	if (step.ema == 0.0) {
+ 		return;
+ 	}
++	if (g_fixed_physics_step.load(std::memory_order_relaxed)) {
++		if (std::abs(*step.fps - 60.0) >= 0.01) {
++			*step.fps = 60.0;
++			*step.dt  = 1.0f / 60.0f;
++			*step.us  = 16666u;
++		}
++		return;
++	}
+ 	double rate = step.ema;
+ 	if (limit != 0 && std::abs(rate - limit) <= limit * 0.06) {
+ 		rate = limit;
+ 	}
+-	rate = std::clamp(rate, 20.0, 120.0) / step.scale;
++	// Cap max physics/gameplay dt at 1/30 s (min rate 30 Hz) so heavy laptop/FG drops to 20-28 FPS
++	// do not break spawners, disappearing bridges/scarecrows (#188, #227), or collision triggers.
++	rate = std::clamp(rate, 30.0, 120.0) / step.scale;
+ 	if (std::abs(rate - *step.fps) < 0.75) {
+ 		return;
+ 	}
+@@ -1018,6 +1037,12 @@ bool CycleFrameLimit() {
+ 	return true;
+ }
+ 
++bool ToggleFixedPhysicsStep() {
++	const bool next = !g_fixed_physics_step.load(std::memory_order_relaxed);
++	g_fixed_physics_step.store(next, std::memory_order_relaxed);
++	return next;
++}
++
+ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
+ 	// A 120 Hz timer loop that blocks between vblanks; it presents and fires the flip events the
+ 	// guest waits for. Its only spin is the last <= 50 us of a vblank wait (SleepMicro).
+@@ -1045,16 +1070,37 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
  	uint32_t abs_refresh = 0;
  	uint32_t previous_limit = FRAME_LIMIT_DISABLED;
  	uint64_t next_flip = 0;
@@ -10647,7 +12392,7 @@ index 3f17232a..e71212c8 100644
  		const auto now = Common::Timer::QueryPerformanceCounter();
  		if (now < next_flip || !m_flip_queue.Flip(0)) {
  			return false;
-@@ -1083,8 +1111,26 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
+@@ -1083,8 +1129,26 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
  		                                        ? g_custom_frame_limit.load(std::memory_order_relaxed)
  		                                        : FRAME_LIMITS[choice])
  		                                 : 0u;
@@ -10675,7 +12420,7 @@ index 3f17232a..e71212c8 100644
  		bool       behind      = false; // a vblank deadline was missed: may present a blank frame
  		uint64_t   frame_begin = 0;
  		uint64_t   period      = 1;
-@@ -1116,7 +1162,10 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
+@@ -1116,7 +1180,10 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
  				// Present each ready flip as it arrives; the guest's vblank events keep their clock.
  				while (!token.stop_requested() &&
  				       Common::Timer::QueryPerformanceCounter() < deadline) {
@@ -10687,7 +12432,7 @@ index 3f17232a..e71212c8 100644
  						continue;
  					}
  					const auto current = Common::Timer::QueryPerformanceCounter();
-@@ -1176,7 +1225,10 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
+@@ -1176,7 +1243,10 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
  		}
  
  		VblankBegin();
@@ -10699,7 +12444,7 @@ index 3f17232a..e71212c8 100644
  		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
  			if (m_presenter.PresentLastFrame()) {
  				presented = true;
-@@ -1680,8 +1732,7 @@ bool FlipQueue::Flip(uint32_t micros) {
+@@ -1680,8 +1750,7 @@ bool FlipQueue::Flip(uint32_t micros) {
  		Graphics::EopTimestamps::OnGuestFlip();
  		Profiler::PublishFrameWork();
  		HangTrace::RecordFlip();
@@ -10709,6 +12454,18 @@ index 3f17232a..e71212c8 100644
  
  		if (Config::GraphicsDebugDumpEnabled() &&
  		    Config::GetPrintfDirection() != Config::LogDirection::Silent) {
+diff --git a/src/graphics/presentation/videoOut.h b/src/graphics/presentation/videoOut.h
+index c4ce13e7..64a611f2 100644
+--- a/src/graphics/presentation/videoOut.h
++++ b/src/graphics/presentation/videoOut.h
+@@ -54,6 +54,7 @@ void                          VideoOutShutdown();
+ 
+ [[nodiscard]] const char* FrameLimitLabel();
+ bool CycleFrameLimit();
++bool ToggleFixedPhysicsStep();
+ 
+ KYTY_SYSV_ABI int  VideoOutOpen(int user_id, int bus_type, int index, const void* param);
+ KYTY_SYSV_ABI int  VideoOutClose(int handle);
 diff --git a/src/graphics/presentation/vrCulling.h b/src/graphics/presentation/vrCulling.h
 new file mode 100644
 index 00000000..2508f96a
@@ -11636,10 +13393,18 @@ index caa9055e..54900760 100644
  	return *frame;
  }
 diff --git a/src/graphics/presentation/window/vulkanWindow.cpp b/src/graphics/presentation/window/vulkanWindow.cpp
-index 21165e69..1d588fbb 100644
+index 21165e69..69af105a 100644
 --- a/src/graphics/presentation/window/vulkanWindow.cpp
 +++ b/src/graphics/presentation/window/vulkanWindow.cpp
-@@ -13,6 +13,7 @@
+@@ -4,6 +4,7 @@
+ #include "common/emulatorConfig.h"
+ #include "common/file.h"
+ #include "common/hangWatchdog.h"
++#include "common/hostStats.h"
+ #include "common/logging/log.h"
+ #include "common/profiler.h"
+ #include "common/stringUtils.h"
+@@ -13,6 +14,7 @@
  #include "graphics/host_gpu/aftermath.h"
  #include "graphics/host_gpu/gpuBreadcrumbs.h"
  #include "graphics/host_gpu/graphicContext.h"
@@ -11647,7 +13412,7 @@ index 21165e69..1d588fbb 100644
  #include "graphics/host_gpu/pageManager.h"
  #include "graphics/host_gpu/renderer/cache/uploadDma.h"
  #include "graphics/host_gpu/renderer/commandRecorder.h"
-@@ -197,6 +198,34 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
+@@ -197,6 +199,34 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
  			LOGF("Vulkan GPU index %d is unavailable; selecting automatically\n",
  			     Config::GetGpuIndex());
  		}
@@ -11682,7 +13447,18 @@ index 21165e69..1d588fbb 100644
  	} else if (vk::PhysicalDevice headset; Vr::OpenXrPhysicalDevice(instance, headset)) {
  		devices = {headset}; // The headset runtime renders on this GPU.
  	}
-@@ -694,11 +723,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+@@ -281,7 +311,9 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
+ 		if (color_write_ext.colorWriteEnable != VK_TRUE) {
+ 			LOGF("colorWriteEnable is not supported\n");
+ 		}
+-		check_feature(image_view_min_lod.minLod, "image view minLod");
++		if (image_view_min_lod.minLod != VK_TRUE) {
++			LOGF("image view minLod is not supported\n");
++		}
+ 
+ 		check_feature(depth_clip_control.depthClipControl, "depthClipControl");
+ 		if (depth_clip_enable.depthClipEnable != VK_TRUE) {
+@@ -694,11 +726,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
  	       graphics.side_queue_index != 0 ? "queue 1" : "shared with queue 0", queue_family,
  	       family_queue_count);
  
@@ -11702,7 +13478,50 @@ index 21165e69..1d588fbb 100644
  	queue_create_info.pQueuePriorities = queue_priorities.data();
  	// KYTY_UPLOAD_DMA: one queue of a transfer-only family (the copy engines), for UploadDma.
  	// Not under RenderDoc, whose captures of the extra queue are not needed for analysis.
-@@ -1393,6 +1428,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+@@ -863,6 +901,13 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+ 		conditional_rendering.pNext = supported_features2.pNext;
+ 		supported_features2.pNext   = &conditional_rendering;
+ 	}
++	const bool image_view_min_lod_extension =
++	    HasExtension(device_extensions, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
++	vk::PhysicalDeviceImageViewMinLodFeaturesEXT supported_image_view_min_lod {};
++	if (image_view_min_lod_extension) {
++		supported_image_view_min_lod.pNext = supported_features2.pNext;
++		supported_features2.pNext          = &supported_image_view_min_lod;
++	}
+ 	const bool barycentric_extension =
+ 	    HasExtension(device_extensions, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+ 	vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR supported_barycentric {};
+@@ -884,6 +929,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+ 	    color_write_extension && supported_color_write.colorWriteEnable == VK_TRUE;
+ 	graphics.depth_clip_enable_enabled =
+ 	    depth_clip_extension && supported_depth_clip.depthClipEnable == VK_TRUE;
++	graphics.image_view_min_lod_enabled =
++	    image_view_min_lod_extension && supported_image_view_min_lod.minLod == VK_TRUE;
+ 	{
+ 		void* optional = nullptr;
+ 		if (graphics.color_write_enable_enabled) {
+@@ -894,11 +941,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+ 			depth_clip_enable.pNext = optional;
+ 			optional                = &depth_clip_enable;
+ 		}
+-		image_view_min_lod.pNext = optional;
++		if (graphics.image_view_min_lod_enabled) {
++			image_view_min_lod.pNext = optional;
++			optional                 = &image_view_min_lod;
++		}
++		depth_clip_control.pNext = optional;
+ 	}
+-	LOGF("Vulkan colorWriteEnable: %s, depthClipEnable: %s\n",
++	LOGF("Vulkan colorWriteEnable: %s, depthClipEnable: %s, imageViewMinLod: %s\n",
+ 	     graphics.color_write_enable_enabled ? "true" : "false (static colour-write masks)",
+-	     graphics.depth_clip_enable_enabled ? "true" : "false (depth clamp only without Z clipping)");
++	     graphics.depth_clip_enable_enabled ? "true" : "false (depth clamp only without Z clipping)",
++	     graphics.image_view_min_lod_enabled ? "true" : "false (omitting view minLod)");
+ 	graphics.conditional_rendering_enabled =
+ 	    conditional_rendering_extension && conditional_rendering.conditionalRendering == VK_TRUE;
+ 	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
+@@ -1393,6 +1445,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
  			create_info.pNext = &diagnostics_features;
  		}
  	}
@@ -11719,15 +13538,30 @@ index 21165e69..1d588fbb 100644
  	vk::PhysicalDeviceFaultFeaturesEXT device_fault {};
  	if (HasExtension(device_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
  		vk::PhysicalDeviceFaultFeaturesEXT supported_fault {};
-@@ -1477,6 +1522,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+@@ -1476,7 +1538,22 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
+ 		return nullptr;
  	}
  
++	// The performance overlay's host statistics describe this adapter (hostStats.h): laptops and
++	// handhelds list more than one, and Windows names them by LUID.
++	{
++		vk::PhysicalDeviceIDProperties id_properties {};
++		vk::PhysicalDeviceProperties2  id_query {};
++		id_query.pNext = &id_properties;
++		physical_device.getProperties2(&id_query);
++		const auto& device_properties = id_query.properties;
++		Common::SetHostGpuAdapter(
++		    id_properties.deviceLUIDValid == VK_TRUE ? id_properties.deviceLUID.data() : nullptr,
++		    device_properties.deviceName.data(), device_properties.vendorID, device_properties.deviceID,
++		    device_properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu);
++	}
++
  	if (DeviceFaultDiagnosticsEnabled()) {
 +		std::printf("Vulkan driver address binding report: %s\n", binding_report.reportAddressBinding ? "enabled" : "unavailable");
  		std::printf("Device-fault diagnostics: EXT fault=%u vendor binary=%u NV checkpoints=%u NV tracking/debug=%u\n",
  		            static_cast<unsigned>(device_fault.deviceFault),
  		            static_cast<unsigned>(device_fault.deviceFaultVendorBinary),
-@@ -1752,6 +1798,20 @@ static VKAPI_ATTR vk::Bool32 VKAPI_CALL VulkanDebugMessengerCallback(
+@@ -1752,6 +1829,20 @@ static VKAPI_ATTR vk::Bool32 VKAPI_CALL VulkanDebugMessengerCallback(
      vk::DebugUtilsMessageTypeFlagsEXT             message_types,
      const vk::DebugUtilsMessengerCallbackDataEXT* callback_data, void* /*user_data*/) {
  	EXIT_IF(callback_data == nullptr);
@@ -11748,7 +13582,7 @@ index 21165e69..1d588fbb 100644
  	EXIT_IF(callback_data->pMessage == nullptr);
  
  	if (VulkanValidationLogOnly() &&
-@@ -1996,8 +2056,15 @@ void WindowContext::CreateVulkan() {
+@@ -1996,8 +2087,15 @@ void WindowContext::CreateVulkan() {
  	}
  	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.instance);
  
@@ -11765,7 +13599,17 @@ index 21165e69..1d588fbb 100644
  		if (VulkanCreateDebugUtilsMessengerEXT(graphic_ctx.instance, &dbg_create_info, nullptr,
  		                                       &graphic_ctx.debug_messenger) !=
  		    vk::Result::eSuccess) {
-@@ -2099,6 +2166,8 @@ void WindowContext::CreateVulkan() {
+@@ -2013,8 +2111,7 @@ void WindowContext::CreateVulkan() {
+ 
+ 	std::vector<const char*> device_extensions = {
+ 	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
+-	    VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+-	    "VK_KHR_maintenance1"};
++	    VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, "VK_KHR_maintenance1"};
+ 
+ #if defined(__APPLE__)
+ 	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable; the renderer
+@@ -2099,6 +2196,8 @@ void WindowContext::CreateVulkan() {
  			device_extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
  		}
  		if (DeviceFaultDiagnosticsEnabled()) {
@@ -11774,7 +13618,7 @@ index 21165e69..1d588fbb 100644
  		if (HasExtension(available_extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
  			device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
  			graphic_ctx.diagnostic_checkpoints_enabled = true;
-@@ -2106,7 +2175,9 @@ void WindowContext::CreateVulkan() {
+@@ -2106,7 +2205,9 @@ void WindowContext::CreateVulkan() {
  		if (HasExtension(available_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
  			device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
  		}
@@ -11785,7 +13629,15 @@ index 21165e69..1d588fbb 100644
  			device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
  		}
  		} else if (const auto* fault_only = std::getenv("KYTY_DEVICE_FAULT_EXT");
-@@ -2254,6 +2325,11 @@ void WindowContext::CreateVulkan() {
+@@ -2141,6 +2242,7 @@ void WindowContext::CreateVulkan() {
+ 		                             VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
+ 		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
+ 		                             VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME,
++		                             VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME,
+ 		                             VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME}) {
+ 			if (HasExtension(available_extensions, extension)) {
+ 				device_extensions.push_back(extension);
+@@ -2254,6 +2356,11 @@ void WindowContext::CreateVulkan() {
  		                            &graphic_ctx.side_queue);
  		EXIT_IF(graphic_ctx.side_queue == nullptr);
  	}
@@ -11798,10 +13650,24 @@ index 21165e69..1d588fbb 100644
  		graphic_ctx.device.getQueue(graphic_ctx.transfer_queue_family, 0,
  		                            &graphic_ctx.transfer_queue);
 diff --git a/src/graphics/presentation/window/window.cpp b/src/graphics/presentation/window/window.cpp
-index ae017617..20a35ec1 100644
+index ae017617..9429aff3 100644
 --- a/src/graphics/presentation/window/window.cpp
 +++ b/src/graphics/presentation/window/window.cpp
-@@ -833,6 +833,9 @@ void WindowContext::Run() {
+@@ -517,6 +517,13 @@ void WindowContext::ProcessEvent(double time_s) {
+ 	if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
+ 		const bool pressed = event->type == SDL_EVENT_KEY_DOWN && event->key.repeat == 0;
+ 		switch (event->key.key) {
++			case SDLK_F6:
++				if (pressed) {
++					const bool on = VideoOut::ToggleFixedPhysicsStep();
++					Log::WriteToConsoleAndLog(on ? "Game speed: 60Hz fixed physics step ON (F6 to restore real-time)\n"
++					                             : "Game speed: real-time step restored\n");
++				}
++				return;
+ 			case SDLK_F7:
+ 				if (pressed) {
+ 					HostInputToggleMouseToJoystick();
+@@ -833,6 +840,9 @@ void WindowContext::Run() {
  			continue;
  		}
  		ProcessEvent(timer.GetTimeS());
