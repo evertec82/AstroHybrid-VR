@@ -84,7 +84,9 @@ function File-Hash([string]$path) {
 }
 function Game-Executable($settings) {
     if ($settings.DlssSuperResolution -and $settings.DlssMode -ne 'DLAA') { return 'AstroBot-NonRT-SoftAssert-DLSS-PhysicsGuard.exe' }
-    if ($settings.ResolutionWidth -eq 3200) { return 'AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard-3200.exe' }
+    if ($settings.ResolutionWidth -eq 3200 -and (Test-Path -LiteralPath (Join-Path $root 'Build\RunHybrid\AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard-3200.exe'))) {
+        return 'AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard-3200.exe'
+    }
     return 'AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard.exe'
 }
 function Use-ConstructionRenderer($settings) {
@@ -92,11 +94,51 @@ function Use-ConstructionRenderer($settings) {
     $quality6000 = $settings.ResolutionWidth -eq 6000 -and $settings.DlssSuperResolution -and $settings.DlssMode -eq 'Quality'
     return $native5184 -or $quality6000
 }
+function Ensure-VrInstalled([bool]$Interactive = $false) {
+    $run = Join-Path $root 'Build\RunHybrid'
+    $baseExe = Join-Path $run 'AstroBot-NonRT-SoftAssert.exe'
+    if (!(Test-Path -LiteralPath $baseExe)) {
+        $ahExe = Join-Path $root 'AstroHybrid.exe'
+        if ($Interactive -and (Test-Path -LiteralPath $ahExe)) {
+            $choice = [Windows.Forms.MessageBox]::Show(
+                "First-time setup is needed before launching VR.`n`nAstroHybrid will open so you can select your decrypted Astro Bot (PPSA21567 v01.019.000) game dump folder. Once setup completes, close AstroHybrid and VR setup will finish automatically.",
+                'AstroHybrid VR First-Time Setup',
+                [Windows.Forms.MessageBoxButtons]::OKCancel,
+                [Windows.Forms.MessageBoxIcon]::Information
+            )
+            if ($choice -ne [Windows.Forms.DialogResult]::OK) {
+                throw 'First-time setup was cancelled. Run AstroHybrid.exe once to set up your game dump, then reopen the VR launcher.'
+            }
+            Start-Process -FilePath $ahExe -WorkingDirectory $root -Wait
+        }
+        if (!(Test-Path -LiteralPath $baseExe)) {
+            throw 'Base game executable not found (Build\RunHybrid\AstroBot-NonRT-SoftAssert.exe). Open AstroHybrid.exe and complete setup with your decrypted PPSA21567 v01.019.000 dump first.'
+        }
+    }
+    $installer = Join-Path $root 'Install-VR.ps1'
+    if (!(Test-Path -LiteralPath $installer)) { return }
+    $pkgPath = Join-Path $root 'vr-package.json'
+    $expectedVersion = $null
+    if (Test-Path -LiteralPath $pkgPath) {
+        try { $expectedVersion = [string](Get-Content -LiteralPath $pkgPath -Raw | ConvertFrom-Json).version } catch {}
+    }
+    $verPath = Join-Path $run 'AstroHybridVR.version'
+    $installedVersion = if (Test-Path -LiteralPath $verPath) { ([IO.File]::ReadAllText($verPath)).Trim() } else { '' }
+    $needsInstall = !(Test-Path -LiteralPath (Join-Path $run 'AstroBot-NonRT-SoftAssert-Gameplay4K-PhysicsGuard.exe')) -or
+                    !(Test-Path -LiteralPath (Join-Path $run 'AstroBot-NonRT-SoftAssert-DLSS-PhysicsGuard.exe')) -or
+                    !(Test-Path -LiteralPath (Join-Path $run 'AstroHybridVR.ready')) -or
+                    !(Test-Path -LiteralPath (Join-Path $root 'Build\FrameGeneration\manifests\openxr\openxr-ofxr.json')) -or
+                    ($expectedVersion -and $installedVersion -ne $expectedVersion)
+    if ($needsInstall) {
+        & $installer -InstallDirectory $root | Out-Null
+    }
+}
 function Apply-Settings($settings) {
     Assert-Resolution $settings
+    Ensure-VrInstalled $false
     $run = Join-Path $root 'Build\RunHybrid'
     $game = Join-Path $run (Game-Executable $settings)
-    if (!(Test-Path -LiteralPath $game)) { throw "Missing game executable: $game" }
+    if (!(Test-Path -LiteralPath $game)) { throw "Missing game executable: $game`n`nRun Install VR.bat first to create the VR game executables." }
     $running = [Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -like 'AstroBot*' } | Where-Object { try { $_.MainModule.FileName.StartsWith("$run\",[StringComparison]::OrdinalIgnoreCase) } catch { $true } }
     if ($running) { throw 'Close Astro Bot before starting another session or applying these settings.' }
     $staged = Join-Path $root 'Build\HeadsetProjectionPreview\kyty_gpu.dll'
@@ -238,6 +280,14 @@ if ($ApplyOnly) { Apply-Settings $settings; 'Settings applied; game was not laun
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
+if (!$PreviewOnly) {
+    try {
+        Ensure-VrInstalled $true
+    } catch {
+        [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'AstroHybrid VR Setup', [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        exit 1
+    }
+}
 $form=New-Object Windows.Forms.Form
 $form.Text='AstroHybrid VR Launcher'; $form.ClientSize=New-Object Drawing.Size(560,560)
 $form.StartPosition='CenterScreen'; $form.FormBorderStyle='FixedDialog'; $form.MaximizeBox=$false

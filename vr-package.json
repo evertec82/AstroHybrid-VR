@@ -1,5 +1,5 @@
 {
-    "version":  "0.1.8",
+    "version":  "0.1.9",
     "base_runtime":  "AstroHybrid 1.2.1",
     "game":  {
                  "title_id":  "PPSA21567",
@@ -105,7 +105,7 @@
     "payload":  [
                     {
                         "path":  "AstroHybrid VR Launcher.ps1",
-                        "sha256":  "f6a831d11283f447a30cb1c6dbfec07daf2c24672df166bf53bd6013e60ac2d6"
+                        "sha256":  "78293c3500a26c0ff6b1a97b7dde32d647a2c355d602c4f6be5dd3fa12ec9a32"
                     },
                     {
                         "path":  "Build/FrameGeneration/BUILD_PROVENANCE.json",
@@ -964,6 +964,10 @@
                         "sha256":  "99f45c458ed7895c61d2fe18c3408005ae3832749ba3afa7e3361ddb879e01c7"
                     },
                     {
+                        "path":  "Build/RunHybrid/PipelineLists/PPSA21567.kyplst",
+                        "sha256":  "8aa09c4baf42be2b7281350d77e243ca81ee3a22d3e81407947cd4412f2fe27e"
+                    },
+                    {
                         "path":  "BUILDING.md",
                         "sha256":  "f65172e223acdcb869fd090cab33244a87171c8374e0de842c0172f6d9c8a4ca"
                     },
@@ -985,7 +989,7 @@
                     },
                     {
                         "path":  "Install-VR.ps1",
-                        "sha256":  "38f35b01fed37e4749d8d06ba81d55b4309778a7e2a2de404f7c84c2af732597"
+                        "sha256":  "0d61b299726747b3f81891a13a0b2b4ce4718d1ee2dd9fb54275bfb5add29e1d"
                     },
                     {
                         "path":  "LICENSE",
@@ -1001,7 +1005,7 @@
                     },
                     {
                         "path":  "README.md",
-                        "sha256":  "3e41c18507c64f7fb48c19b673cf14c7088c51b977fb802ae76169598c3c1aef"
+                        "sha256":  "41d96aa169710242df33a509c82295f1828e7b9098d233a7de4e304b9d500e60"
                     },
                     {
                         "path":  "VR-support/libSceVideoOut.prx",

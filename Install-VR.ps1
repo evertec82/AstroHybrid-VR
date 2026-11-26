@@ -95,6 +95,7 @@ foreach($relative in @('kyty_gpu.dll','libs\libSceVideoOut.prx')) {
 Copy-Item -LiteralPath (Join-Path $root 'Build\HeadsetProjectionPreview\kyty_gpu.dll') -Destination (Join-Path $run 'kyty_gpu.dll') -Force
 Copy-Item -LiteralPath (Join-Path $root 'VR-support\libSceVideoOut.prx') -Destination (Join-Path $run 'libs\libSceVideoOut.prx') -Force
 [IO.File]::WriteAllText((Join-Path $run 'AstroHybridVR.ready'),(Hash-File (Join-Path $run 'kyty_gpu.dll')).ToUpperInvariant())
+[IO.File]::WriteAllText((Join-Path $run 'AstroHybridVR.version'),[string]$manifest.version)
 
 $fg=Join-Path $root 'Build\FrameGeneration'
 $xrDir=Join-Path $fg 'manifests\openxr'; $vkDir=Join-Path $fg 'manifests\vulkan'
