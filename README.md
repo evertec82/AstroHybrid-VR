@@ -16,11 +16,11 @@ Both eyes render from the **same game frame**. Features include head tracking, h
 
 ## Upgrading an existing installation
 
-Close the game, extract **AstroHybrid-VR-v0.1.9-Windows.zip** directly into your existing AstroHybrid / AstroHybrid VR folder (overwriting existing files), and open **Play AstroHybrid VR - Launcher.bat**. The launcher automatically updates the VR executables, renderer, HUD layout, and OFXR files while keeping your saved preferences.
+Close the game, extract **AstroHybrid-VR-v0.1.10-Windows.zip** directly into your existing AstroHybrid / AstroHybrid VR folder (overwriting existing files), and open **Play AstroHybrid VR - Launcher.bat**. The launcher automatically updates the VR executables, renderer, HUD layout, and OFXR files while keeping your saved preferences.
 
 ## First-time installation
 
-1. Download **AstroHybrid-VR-v0.1.9-Windows.zip** from this repository's [releases](https://github.com/evertec82/AstroHybrid-VR/releases) and extract it to any folder (for example, `D:\Games\AstroHybrid-VR`).
+1. Download **AstroHybrid-VR-v0.1.10-Windows.zip** from this repository's [releases](https://github.com/evertec82/AstroHybrid-VR/releases) and extract it to any folder (for example, `D:\Games\AstroHybrid-VR`).
 2. Connect your headset through your usual PC VR software and make sure the intended OpenXR runtime is active.
 3. Open **Play AstroHybrid VR - Launcher.bat**.
    - On a fresh folder, the launcher automatically opens the bundled **AstroHybrid.exe** so you can select your decrypted game dump folder (the folder containing `eboot.bin`, `sce_module`, and `sce_sys`). **Keep the game files in that dump folder; do not put a PKG or archive into the VR mod folder.**

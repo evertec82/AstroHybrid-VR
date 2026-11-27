@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index cca6f074..a9d0b52d 100644
+index cca6f074..d283b0b7 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -598,6 +598,7 @@ list(APPEND check_headers
@@ -10,7 +10,7 @@ index cca6f074..a9d0b52d 100644
  	target_link_libraries(${target} ${kyty_emulator_link_libraries})
  	target_include_directories(${target} PRIVATE ${inc_headers})
  	if (WIN32)
-@@ -754,6 +755,15 @@ add_executable(game_patch_filter_tests EXCLUDE_FROM_ALL
+@@ -754,6 +755,18 @@ add_executable(game_patch_filter_tests EXCLUDE_FROM_ALL
  )
  target_include_directories(game_patch_filter_tests PRIVATE ${inc_headers})
  
@@ -21,12 +21,15 @@ index cca6f074..a9d0b52d 100644
 +add_executable(vr_recenter_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/VrRecenterTests.cpp")
 +target_include_directories(vr_recenter_tests PRIVATE "${KYTY_SOURCE_DIR}")
 +add_test(NAME vr_system_recenter COMMAND vr_recenter_tests)
++add_executable(vr_gamepad_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/VrGamepadTests.cpp")
++target_include_directories(vr_gamepad_tests PRIVATE "${KYTY_SOURCE_DIR}")
++add_test(NAME vr_gamepad_motion COMMAND vr_gamepad_tests)
 +target_include_directories(frame_step_tests PRIVATE ${inc_headers})
 +
  # u59-preset.json (common/u59Preset.h): parsing and lookup for the launcher, the emulator's startup
  # warnings, the shipped tools/u59-preset.json, and the code defaults that make it optional.
  add_executable(u59_preset_tests EXCLUDE_FROM_ALL
-@@ -1253,6 +1263,7 @@ if(BUILD_TESTING)
+@@ -1253,6 +1266,7 @@ if(BUILD_TESTING)
  	set_tests_properties(guest_probe_retire guest_probe_shared guest_probe_equals PROPERTIES TIMEOUT 60)
  	add_test(NAME lod_stats_report COMMAND $<TARGET_FILE:lod_stats_report_tests>)
  	add_test(NAME game_patch_filter COMMAND $<TARGET_FILE:game_patch_filter_tests>)
@@ -34,7 +37,7 @@ index cca6f074..a9d0b52d 100644
  	add_test(NAME u59_preset COMMAND $<TARGET_FILE:u59_preset_tests>)
  	add_test(NAME shader_codegen
  	         COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --codegen-only)
-@@ -1429,6 +1440,8 @@ if(BUILD_TESTING)
+@@ -1429,6 +1443,8 @@ if(BUILD_TESTING)
  		ENVIRONMENT "KYTY_PRIORITY_WAIT_SPIN_US=500")
  	add_test(NAME stream_buffer_ring
  		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --stream-buffer-only)
@@ -43,7 +46,7 @@ index cca6f074..a9d0b52d 100644
  	# KYTY_OCCLUSION_BATCH: the batch reduction shader against the per-dump reduction, and the
  	# scheduler's pre-submit hook it flushes from.
  	add_test(NAME occlusion_batch
-@@ -2541,7 +2554,19 @@ if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+@@ -2541,7 +2557,19 @@ if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
  	endif()
  endif()
  
@@ -64,7 +67,7 @@ index cca6f074..a9d0b52d 100644
  configure_macos_guest_address_space(kyty_emulator)
  
  option(KYTY_EMULATOR_IPO "Enable release interprocedural optimization for the emulator target" OFF)
-@@ -2590,9 +2615,15 @@ target_link_libraries(kyty_emulator ${CMAKE_DL_LIBS})
+@@ -2590,9 +2618,15 @@ target_link_libraries(kyty_emulator ${CMAKE_DL_LIBS})
  # folder (include/, lib/Windows_x86_64/nvsdk_ngx_d.lib) to build it in; empty: not built in.
  set(KYTY_NGX_SDK_DIR "" CACHE PATH "NVIDIA NGX SDK folder (DLSS); empty to build without it")
  if(KYTY_NGX_SDK_DIR)
@@ -83,7 +86,7 @@ index cca6f074..a9d0b52d 100644
  endif()
  # AstroHybrid: DLSS Frame Generation through Streamline (renderer/frameGen.cpp), headers only;
  # sl.interposer.dll is loaded at run time. Empty: not built in.
-@@ -2614,7 +2645,7 @@ set(KYTY_EMULATOR_PDB_LINK_PATH "${CMAKE_CURRENT_BINARY_DIR}/kyty_emulator.pdb")
+@@ -2614,7 +2648,7 @@ set(KYTY_EMULATOR_PDB_LINK_PATH "${CMAKE_CURRENT_BINARY_DIR}/kyty_emulator.pdb")
  
  if(KYTY_CLANG_CL)
  	target_link_options(kyty_emulator PRIVATE
@@ -11855,7 +11858,7 @@ index 00000000..df9ad96f
 +
 +} // namespace Libs::Vr
 diff --git a/src/graphics/presentation/openxrHeadset.cpp b/src/graphics/presentation/openxrHeadset.cpp
-index bbfb9446..b84d10bb 100644
+index bbfb9446..ae7afc55 100644
 --- a/src/graphics/presentation/openxrHeadset.cpp
 +++ b/src/graphics/presentation/openxrHeadset.cpp
 @@ -1,19 +1,32 @@
@@ -12106,7 +12109,33 @@ index bbfb9446..b84d10bb 100644
  }
  
  struct Access {
-@@ -256,7 +394,6 @@ bool CreateInput() {
+@@ -175,13 +313,24 @@ XrVector3f Rotate(const XrQuaternionf& q, const XrVector3f& v) {
+ 	        v.z + q.w * t.z + (q.x * t.y - q.y * t.x)};
+ }
+ 
+-VrPose Locate(XrSpace space, XrTime time) {
++VrPose Locate(XrSpace space, XrTime time, VrControllerInput* vel_out = nullptr) {
+ 	VrPose          pose;
++	XrSpaceVelocity velocity {XR_TYPE_SPACE_VELOCITY};
+ 	XrSpaceLocation location {XR_TYPE_SPACE_LOCATION};
++	if (vel_out != nullptr) {
++		location.next = &velocity;
++	}
+ 	if (XR_SUCCEEDED(xrLocateSpace(space, g.local_space, time, &location)) &&
+ 	    (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
+ 		const auto& [q, p] = location.pose;
+ 		pose               = {true, {q.x, q.y, q.z, q.w}, {p.x, p.y, p.z}};
++		if (vel_out != nullptr &&
++		    (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0) {
++			vel_out->angular_vel_valid   = true;
++			vel_out->angular_velocity[0] = velocity.angularVelocity.x;
++			vel_out->angular_velocity[1] = velocity.angularVelocity.y;
++			vel_out->angular_velocity[2] = velocity.angularVelocity.z;
++		}
+ 	}
+ 	return pose;
+ }
+@@ -256,7 +405,6 @@ bool CreateInput() {
  		xrStringToPath(g.instance, fmt::format("/user/hand/{}", HANDS[hand]).c_str(),
  		               &g.hand_path[hand]);
  	}
@@ -12114,7 +12143,7 @@ index bbfb9446..b84d10bb 100644
  	for (int i = 0; i < ACTION_COUNT; i++) {
  		XrActionCreateInfo info {XR_TYPE_ACTION_CREATE_INFO};
  		info.actionType          = ACTIONS[i].type;
-@@ -267,28 +404,47 @@ bool CreateInput() {
+@@ -267,28 +415,47 @@ bool CreateInput() {
  		if (!Ok(xrCreateAction(g.action_set, &info, &g.actions[i]), "xrCreateAction")) {
  			return false;
  		}
@@ -12178,7 +12207,7 @@ index bbfb9446..b84d10bb 100644
  		return false;
  	}
  	for (int hand = 0; hand < 2; hand++) {
-@@ -300,12 +456,31 @@ bool CreateInput() {
+@@ -300,12 +467,31 @@ bool CreateInput() {
  			return false;
  		}
  	}
@@ -12210,7 +12239,7 @@ index bbfb9446..b84d10bb 100644
  	VrControllerInput input[2];
  	XrActiveActionSet active {g.action_set, XR_NULL_PATH};
  	XrActionsSyncInfo sync {XR_TYPE_ACTIONS_SYNC_INFO};
-@@ -321,11 +496,12 @@ void PollInput(XrTime time) {
+@@ -321,11 +507,12 @@ void PollInput(XrTime time) {
  				read(g.session, &info, &state);
  				return state;
  			};
@@ -12228,7 +12257,7 @@ index bbfb9446..b84d10bb 100644
  			const auto flag = [&](Action action) {
  				return get(action, xrGetActionStateBoolean,
  				           XrActionStateBoolean {XR_TYPE_ACTION_STATE_BOOLEAN})
-@@ -333,23 +509,50 @@ void PollInput(XrTime time) {
+@@ -333,23 +520,51 @@ void PollInput(XrTime time) {
  			};
  			const auto stick = get(STICK, xrGetActionStateVector2f,
  			                       XrActionStateVector2f {XR_TYPE_ACTION_STATE_VECTOR2F});
@@ -12243,13 +12272,17 @@ index bbfb9446..b84d10bb 100644
  			out.stick_y      = stick.currentState.y;
  			out.stick_click  = flag(STICK_CLICK);
 -			out.primary      = flag(PRIMARY);
-+			out.primary      = primary_state.currentState == XR_TRUE;
- 			out.secondary    = flag(SECONDARY);
- 			out.menu         = flag(MENU);
- 			out.pose         = Locate(g.grip_space[hand], time);
+-			out.secondary    = flag(SECONDARY);
+-			out.menu         = flag(MENU);
+-			out.pose         = Locate(g.grip_space[hand], time);
 -			out.connected =
 -			    get(GRIP, xrGetActionStatePose, XrActionStatePose {XR_TYPE_ACTION_STATE_POSE})
 -			        .isActive == XR_TRUE;
++			out.primary        = primary_state.currentState == XR_TRUE;
++			out.secondary      = flag(SECONDARY);
++			out.menu           = flag(MENU);
++			out.sample_time_ns = static_cast<uint64_t>(time);
++			out.pose           = Locate(g.grip_space[hand], time, &out);
 +			out.connected = grip_state.isActive == XR_TRUE || stick.isActive == XR_TRUE ||
 +			                trigger_state.isActive == XR_TRUE || primary_state.isActive == XR_TRUE;
 +
@@ -12285,7 +12318,7 @@ index bbfb9446..b84d10bb 100644
  	g.input[0] = input[0];
  	g.input[1] = input[1];
  }
-@@ -361,6 +564,14 @@ void HandleEvents() {
+@@ -361,6 +576,14 @@ void HandleEvents() {
  			g.running = false;
  			continue;
  		}
@@ -12300,7 +12333,7 @@ index bbfb9446..b84d10bb 100644
  		if (event.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
  			continue;
  		}
-@@ -389,11 +600,11 @@ void HandleEvents() {
+@@ -389,11 +612,11 @@ void HandleEvents() {
  	}
  }
  
@@ -12314,7 +12347,7 @@ index bbfb9446..b84d10bb 100644
  		if (!Ok(xrAcquireSwapchainImage(g.swapchain, &acquire, &image), "acquire")) {
  			return false;
  		}
-@@ -407,64 +618,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
+@@ -407,64 +630,109 @@ bool CopyToSwapchain(const VulkanImage& staging) {
  		vk::CommandBufferBeginInfo begin {};
  		begin.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
  		(void)g.command.begin(&begin);
@@ -12448,7 +12481,7 @@ index bbfb9446..b84d10bb 100644
  }
  
  // The game drew the picture for the head pose it read, so it is placed in the world at that pose
-@@ -479,12 +735,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -479,12 +747,9 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  	XrView      located[2] {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
  	uint32_t    count = 0;
  	const bool  valid =
@@ -12462,7 +12495,7 @@ index bbfb9446..b84d10bb 100644
  	// The outer side of each eye is its temporal side: left for the left eye.
  	const float out    = std::atan(Hmd2::FOV_TAN_OUT);
  	const float in     = std::atan(Hmd2::FOV_TAN_IN);
-@@ -494,15 +747,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -494,15 +759,27 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  		const float side = eye == 0 ? -Hmd2::EYE_OFFSET_M : Hmd2::EYE_OFFSET_M;
  		auto&       view = views[eye];
  		view.pose        = valid ? located[eye].pose : XrPosef {{0, 0, 0, 1}, {side, 0, 0}};
@@ -12494,7 +12527,7 @@ index bbfb9446..b84d10bb 100644
  		view.subImage.imageArrayIndex = static_cast<uint32_t>(eye);
  	}
  	layer.space     = head.valid ? g.local_space : g.view_space;
-@@ -511,18 +776,97 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
+@@ -511,18 +788,97 @@ void PlaceViews(XrTime time, XrCompositionLayerProjection& layer,
  }
  
  void ThreadMain() {
@@ -12593,7 +12626,7 @@ index bbfb9446..b84d10bb 100644
  			if (!Ok(xrBeginFrame(g.session, &begin), "xrBeginFrame")) {
  				continue;
  			}
-@@ -530,17 +874,127 @@ void ThreadMain() {
+@@ -530,17 +886,127 @@ void ThreadMain() {
  		XrCompositionLayerProjection     layer {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
  		XrCompositionLayerProjectionView views[2] {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
  		                                           {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
@@ -12727,7 +12760,7 @@ index bbfb9446..b84d10bb 100644
  	}
  }
  
-@@ -550,6 +1004,8 @@ void OpenXrInit() {
+@@ -550,6 +1016,8 @@ void OpenXrInit() {
  	if (!Config::VrEnabled()) {
  		return;
  	}
@@ -12736,7 +12769,7 @@ index bbfb9446..b84d10bb 100644
  	if (const char* env = std::getenv("KYTY_OPENXR");
  	    env != nullptr && std::strcmp(env, "0") == 0) {
  		return;
-@@ -561,6 +1017,33 @@ void OpenXrInit() {
+@@ -561,6 +1029,33 @@ void OpenXrInit() {
  	info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
  	info.enabledExtensionCount      = 1;
  	info.enabledExtensionNames      = extensions;
@@ -12770,7 +12803,7 @@ index bbfb9446..b84d10bb 100644
  	if (XR_FAILED(xrCreateInstance(&info, &g.instance))) {
  		DestroyInstance("no runtime available");
  		return;
-@@ -602,6 +1085,64 @@ void OpenXrInit() {
+@@ -602,6 +1097,64 @@ void OpenXrInit() {
  	xrEnumerateViewConfigurationViews(g.instance, g.system,
  	                                  XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &count, views);
  	g.eye = {views[0].recommendedImageRectWidth, views[0].recommendedImageRectHeight};
@@ -12835,7 +12868,7 @@ index bbfb9446..b84d10bb 100644
  	XrSystemProperties properties {XR_TYPE_SYSTEM_PROPERTIES};
  	xrGetSystemProperties(g.instance, g.system, &properties);
  	Log::WriteToConsoleAndLog(fmt::format("OpenXR: headset '{}' ready\n", properties.systemName));
-@@ -620,6 +1161,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
+@@ -620,6 +1173,28 @@ void OpenXrAppendExtensions(std::vector<const char*>&                   out,
  			out.push_back(name.c_str());
  		}
  	}
@@ -12864,7 +12897,7 @@ index bbfb9446..b84d10bb 100644
  }
  
  bool OpenXrPhysicalDevice(vk::Instance instance, vk::PhysicalDevice& out) {
-@@ -645,12 +1208,67 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -645,12 +1220,67 @@ void OpenXrStartSession(GraphicContext& graphics) {
  		return;
  	}
  	g.graphics = &graphics;
@@ -12933,7 +12966,7 @@ index bbfb9446..b84d10bb 100644
  	XrSessionCreateInfo info {XR_TYPE_SESSION_CREATE_INFO};
  	info.next     = &binding;
  	info.systemId = g.system;
-@@ -680,6 +1298,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -680,6 +1310,10 @@ void OpenXrStartSession(GraphicContext& graphics) {
  	(void)graphics.device.allocateCommandBuffers(&allocate, &g.command);
  	vk::FenceCreateInfo fence {};
  	(void)graphics.device.createFence(&fence, nullptr, &g.fence);
@@ -12944,7 +12977,7 @@ index bbfb9446..b84d10bb 100644
  
  	g.running = true;
  	g.thread  = std::thread(ThreadMain);
-@@ -687,18 +1309,35 @@ void OpenXrStartSession(GraphicContext& graphics) {
+@@ -687,18 +1321,35 @@ void OpenXrStartSession(GraphicContext& graphics) {
  
  void OpenXrShutdown() {
  	g.running = false;
@@ -12982,7 +13015,7 @@ index bbfb9446..b84d10bb 100644
  		if (slot.image.image != nullptr) {
  			g.graphics->DeleteImage(slot.image);
  		}
-@@ -708,6 +1347,57 @@ void OpenXrShutdown() {
+@@ -708,6 +1359,57 @@ void OpenXrShutdown() {
  	g.graphics = nullptr;
  }
  
@@ -13040,7 +13073,7 @@ index bbfb9446..b84d10bb 100644
  VrPose OpenXrGetHeadPose() {
  	if (!g.running) {
  		return {};
-@@ -727,16 +1417,21 @@ VrControllerInput OpenXrGetController(int hand) {
+@@ -727,16 +1429,21 @@ VrControllerInput OpenXrGetController(int hand) {
  	return g.input[hand];
  }
  
@@ -13066,7 +13099,7 @@ index bbfb9446..b84d10bb 100644
  	const auto vk_command = command.Handle();
  	Barrier(vk_command, slot.image.image, vk::ImageLayout::eUndefined,
  	        vk::ImageLayout::eTransferDstOptimal, 1, TRANSFER, TRANSFER_WRITE);
-@@ -747,16 +1442,183 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
+@@ -747,16 +1454,183 @@ void OpenXrQueueEyeSource(CommandBuffer& command, const VulkanImage& source) {
  	blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
  	blit.dstOffsets[1]  = vk::Offset3D {static_cast<int32_t>(slot.image.extent.width),
  	                                    static_cast<int32_t>(slot.image.extent.height), 1};
@@ -14403,7 +14436,7 @@ index 00000000..2508f96a
 +} // namespace Libs::Vr
 +#endif
 diff --git a/src/graphics/presentation/vrInput.h b/src/graphics/presentation/vrInput.h
-index f1b13f4d..c298c5cf 100644
+index f1b13f4d..82513f3d 100644
 --- a/src/graphics/presentation/vrInput.h
 +++ b/src/graphics/presentation/vrInput.h
 @@ -1,7 +1,13 @@
@@ -14420,7 +14453,7 @@ index f1b13f4d..c298c5cf 100644
  
  // A pose in the tracking space: metres, right-handed, +y up, -z forward (the OpenXR convention).
  struct VrPose {
-@@ -10,6 +16,18 @@ struct VrPose {
+@@ -10,27 +16,48 @@ struct VrPose {
  	float position[3]    = {0.0f, 0.0f, 0.0f};
  };
  
@@ -14438,8 +14471,30 @@ index f1b13f4d..c298c5cf 100644
 +
  // One headset controller. Sticks are -1..1 with +y up, the trigger and squeeze 0..1.
  struct VrControllerInput {
- 	bool   connected = false;
-@@ -26,11 +44,17 @@ struct VrControllerInput {
+-	bool   connected = false;
+-	VrPose pose;
+-	float  trigger     = 0.0f;
+-	float  squeeze     = 0.0f;
+-	float  stick_x     = 0.0f;
+-	float  stick_y     = 0.0f;
+-	bool   primary     = false; // X on the left controller, A on the right one.
+-	bool   secondary   = false; // Y on the left controller, B on the right one.
+-	bool   stick_click = false;
+-	bool   menu        = false;
++	bool     connected = false;
++	VrPose   pose;
++	uint64_t sample_time_ns      = 0;
++	bool     angular_vel_valid   = false;
++	float    angular_velocity[3] = {0.0f, 0.0f, 0.0f}; // rad/s in tracking space
++	float    trigger             = 0.0f;
++	float    squeeze             = 0.0f;
++	float    stick_x             = 0.0f;
++	float    stick_y             = 0.0f;
++	bool     primary             = false; // X on the left controller, A on the right one.
++	bool     secondary           = false; // Y on the left controller, B on the right one.
++	bool     stick_click         = false;
++	bool     menu                = false;
+ };
  
  // Latest head pose; not valid, at the origin, while no headset session tracks the head.
  [[nodiscard]] VrPose OpenXrGetHeadPose();
@@ -15375,10 +15430,25 @@ index b098dee8..cddcbfef 100644
 +
  } // namespace Libs::Graphics::ShaderRecompiler::IR
 diff --git a/src/hybrid/kytyGpuBridge.cpp b/src/hybrid/kytyGpuBridge.cpp
-index b8628fcd..6ada88c2 100644
+index b8628fcd..8cc9294d 100644
 --- a/src/hybrid/kytyGpuBridge.cpp
 +++ b/src/hybrid/kytyGpuBridge.cpp
-@@ -563,6 +563,10 @@ bool BridgeGuestAccessFault(const Common::HostException::ExceptionInfo& info) {
+@@ -242,9 +242,11 @@ void ApplyPadOutput(int handle, uint32_t& seen, KytyGpuPadOutput& applied) {
+ 	const uint8_t motor_large = std::max(out.vibration_large, out.audio_vibration_large);
+ 	const uint8_t motor_small = std::max(out.vibration_small, out.audio_vibration_small);
+ 	if (motor_large != std::max(applied.vibration_large, applied.audio_vibration_large) ||
+-	    motor_small != std::max(applied.vibration_small, applied.audio_vibration_small) || applied.sequence == 0) {
+-		const uint8_t vibration[2] = {motor_large, motor_small};
+-		(void)Controller::PadSetVibration(handle, reinterpret_cast<const Controller::PadVibrationParam*>(vibration));
++	    motor_small != std::max(applied.vibration_small, applied.audio_vibration_small) ||
++	    out.vibration_large != applied.vibration_large ||
++	    out.vibration_small != applied.vibration_small || applied.sequence == 0) {
++		Controller::PadSetBridgeVibration(handle, out.vibration_large, out.vibration_small,
++		                                  out.audio_vibration_large, out.audio_vibration_small);
+ 	}
+ 	if (out.light_bar_valid != applied.light_bar_valid ||
+ 	    std::memcmp(out.light_bar, applied.light_bar, sizeof(out.light_bar)) != 0) {
+@@ -563,6 +565,10 @@ bool BridgeGuestAccessFault(const Common::HostException::ExceptionInfo& info) {
  		                                reinterpret_cast<LPCWSTR>(info.exception_address), &module) != 0 &&
  		             module == game;
  	}
@@ -15389,7 +15459,7 @@ index b8628fcd..6ada88c2 100644
  	const GuestLoad::FaultScope guest_load(guest_code ? info.native_context : nullptr);
  	return Libs::LibKernel::Memory::HandleGpuFault(access, info.access_violation_vaddr);
  }
-@@ -602,11 +606,20 @@ void RendererThread() {
+@@ -602,11 +608,20 @@ void RendererThread() {
  	{
  		Common::Subsystems subsystems(true);
  		Config::ConfigOptions options {};
@@ -15410,7 +15480,7 @@ index b8628fcd..6ada88c2 100644
  		// KYTY_GPU_FULLSCREEN=1: start in desktop fullscreen with the cursor hidden (F11 or Alt+Enter
  		// still toggles it).
  		if (const char* fullscreen = std::getenv("KYTY_GPU_FULLSCREEN"); fullscreen != nullptr && fullscreen[0] == '1') {
-@@ -931,6 +944,16 @@ extern "C" KYTY_GPU_EXPORT uint64_t KytyGpuQueuePadAudio(uint32_t freq, int is_s
+@@ -931,6 +946,16 @@ extern "C" KYTY_GPU_EXPORT uint64_t KytyGpuQueuePadAudio(uint32_t freq, int is_s
  	if (data == nullptr || frames == 0 || channels == 0 || freq == 0) {
  		return 0;
  	}
@@ -15543,7 +15613,7 @@ index 9302f3e3..25171eb7 100644
  		return true;
  	}
 diff --git a/src/libs/controller.cpp b/src/libs/controller.cpp
-index ad393f7e..6732019a 100644
+index ad393f7e..f3f0bf16 100644
 --- a/src/libs/controller.cpp
 +++ b/src/libs/controller.cpp
 @@ -13,6 +13,7 @@
@@ -15554,16 +15624,18 @@ index ad393f7e..6732019a 100644
  
  #include <algorithm>
  #include <array>
-@@ -36,6 +37,8 @@ static_assert(PAD_HANDLE + Config::MAX_PLAYERS <= PAD_HANDLE_VR_LEFT);
+@@ -36,6 +37,10 @@ static_assert(PAD_HANDLE + Config::MAX_PLAYERS <= PAD_HANDLE_VR_LEFT);
  constexpr uint32_t RUMBLE_DURATION_MS = 0xffff;
  constexpr uint32_t RELEASE_FLUSH_MS   = 50;
  
 +static std::atomic<uint64_t> g_last_vr_input_us {0};
++static Common::Mutex         g_vr_motion_mutex;
++static VrGamepad::MotionTracker g_vr_motion_tracker;
 +
  struct PadControllerInformation {
  	float    touch_pixel_density;
  	uint16_t touch_resolution_x;
-@@ -130,6 +133,7 @@ public:
+@@ -130,6 +135,7 @@ public:
  	void SetMotionSensorState(bool enable);
  	void ResetOrientation();
  	void ToggleGyroEmulation(int id);
@@ -15571,7 +15643,15 @@ index ad393f7e..6732019a 100644
  	void ResetInputState();
  	void GetConnectionInfo(bool* flag, int* count);
  	void SetVibration(uint8_t large_motor, uint8_t small_motor);
-@@ -154,13 +158,24 @@ private:
+@@ -141,6 +147,7 @@ public:
+ 	float GetSettingScale(Setting setting) const;
+ 	void ReadState(ControllerState* state, bool* flag, int* count);
+ 	int  ReadStates(ControllerState* states, int states_num, bool* flag, int* count);
++	[[nodiscard]] bool ShouldUseVrMotion(uint64_t last_vr_us, uint64_t now_us, bool* motion_enabled);
+ 
+ private:
+ 	static constexpr uint32_t STATES_MAX = 64;
+@@ -154,18 +161,32 @@ private:
  	void AddState();
  	// Emulated tilt: the right stick drives pitch and roll instead of the stick axes.
  	void UpdateEmulatedTilt();
@@ -15600,7 +15680,15 @@ index ad393f7e..6732019a 100644
  	bool             m_connected       = false;
  	int              m_connected_count = 0;
  	bool             m_motion_enabled  = true;
-@@ -286,14 +301,29 @@ float GetSettingScale(Setting setting) {
+ 	uint64_t         m_gyro_time       = 0;
+ 	bool             m_gyro_emulation  = false;
++	bool             m_has_real_gyro   = false;
++	uint64_t         m_last_input_us   = 0;
++	uint64_t         m_last_motion_us  = 0;
+ 	uint64_t         m_emulated_time   = 0;
+ 	std::array<int, 2> m_emulated_stick {128, 128};
+ 	// Accelerometer gravity direction in the reset frame.
+@@ -286,14 +307,29 @@ float GetSettingScale(Setting setting) {
  }
  
  void GameController::CycleSetting(Setting setting) {
@@ -15638,7 +15726,7 @@ index ad393f7e..6732019a 100644
  	}
  }
  
-@@ -307,7 +337,14 @@ float GameController::GetSettingScale(Setting setting) const {
+@@ -307,7 +343,14 @@ float GameController::GetSettingScale(Setting setting) const {
  	if (setting == Setting::VibrationIntensity) {
  		return INTENSITY[step] * (Config::GetControllerVibrationIntensity() / 100.0f);
  	}
@@ -15654,7 +15742,7 @@ index ad393f7e..6732019a 100644
  }
  
  static uint8_t Scale(uint8_t value, float scale) {
-@@ -516,6 +553,17 @@ static bool HostInputOnly() {
+@@ -516,22 +559,38 @@ static bool HostInputOnly() {
  	return enabled;
  }
  
@@ -15672,7 +15760,9 @@ index ad393f7e..6732019a 100644
  void GameController::SetDevices(int active_id) {
  	Common::LockGuard lock(m_mutex);
  	if (m_active_id == active_id) {
-@@ -524,13 +572,16 @@ void GameController::SetDevices(int active_id) {
+ 		return;
+ 	}
++	bool has_real_gyro = false;
  	if (active_id != HOST_INPUT_CONTROLLER_ID && active_id != -1) {
  		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
  		    pad != nullptr) {
@@ -15692,12 +15782,55 @@ index ad393f7e..6732019a 100644
 +						LOGF("\t enabling controller sensor failed: %s\n", SDL_GetError());
 +					}
  				}
++				has_real_gyro = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO);
  			}
  		}
-@@ -781,6 +832,15 @@ void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t t
+ 	}
+@@ -540,8 +599,11 @@ void GameController::SetDevices(int active_id) {
+ 	if (!m_connected && new_connected) {
+ 		m_connected_count++;
+ 	}
+-	m_active_id     = active_id;
+-	m_connected     = new_connected;
++	m_active_id      = active_id;
++	m_connected      = new_connected;
++	m_has_real_gyro  = has_real_gyro;
++	m_last_input_us  = 0;
++	m_last_motion_us = 0;
+ 	m_state         = {};
+ 	m_gyro_time     = 0;
+ 	m_gyro_emulation = false;
+@@ -616,6 +678,9 @@ void GameController::Button(int id, uint32_t button, bool down) {
+ 	// Keyboard events are routed to the configured player's port.
+ 	if (m_active_id == id || id == HOST_INPUT_CONTROLLER_ID) {
+ 		m_state.time = LibKernel::KernelGetProcessTime();
++		if (id != HOST_INPUT_CONTROLLER_ID) {
++			m_last_input_us = m_state.time;
++		}
+ 
+ 		m_state.buttons = down ? m_state.buttons | button : m_state.buttons & ~button;
+ 
+@@ -628,6 +693,13 @@ void GameController::Axis(int id, Controller::Axis axis, int value) {
+ 
+ 	if (m_active_id == id || id == HOST_INPUT_CONTROLLER_ID) {
+ 		m_state.time = LibKernel::KernelGetProcessTime();
++		if (id != HOST_INPUT_CONTROLLER_ID) {
++			const bool is_trigger = axis == Controller::Axis::TriggerLeft ||
++			                        axis == Controller::Axis::TriggerRight;
++			if ((is_trigger && value > 16) || (!is_trigger && std::abs(value - 128) > 16)) {
++				m_last_input_us = m_state.time;
++			}
++		}
+ 
+ 		int axis_id = static_cast<int>(axis);
+ 
+@@ -781,6 +853,18 @@ void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t t
  		m_gyro_time = time_us;
  	}
  	m_state.time = LibKernel::KernelGetProcessTime();
++	if (Length(m_state.gyro) > 0.35f) {
++		m_last_motion_us = m_state.time;
++	}
 +	// Pure sensor updates do not change buttons/touch: coalesce into the latest unread ring entry
 +	// so high-rate 200Hz Switch/PS5 gyro bursts never overflow the 64-entry state buffer.
 +	if (m_states_num != 0) {
@@ -15710,7 +15843,7 @@ index ad393f7e..6732019a 100644
  	AddState();
  }
  
-@@ -805,7 +865,13 @@ static Quat QuatMultiply(const Quat& a, const Quat& b) {
+@@ -805,7 +889,13 @@ static Quat QuatMultiply(const Quat& a, const Quat& b) {
  }
  
  void GameController::UpdateEmulatedTilt() {
@@ -15725,7 +15858,7 @@ index ad393f7e..6732019a 100644
  	const auto      angle     = [](int value) {
          return std::clamp((value - 128) / 127.0f, -1.0f, 1.0f) * max_angle;
  	};
-@@ -842,18 +908,35 @@ void GameController::UpdateEmulatedTilt() {
+@@ -842,18 +932,35 @@ void GameController::UpdateEmulatedTilt() {
  
  void GameController::ToggleGyroEmulation(int id) {
  	Common::LockGuard lock(m_mutex);
@@ -15764,7 +15897,34 @@ index ad393f7e..6732019a 100644
  	m_emulated_time  = 0;
  	m_state.time     = LibKernel::KernelGetProcessTime();
  	if (m_gyro_emulation) {
-@@ -906,7 +989,9 @@ static void StopHostPad(SDL_Gamepad* pad) {
+@@ -882,6 +989,26 @@ void GameController::ResetOrientation() {
+ 	AddState();
+ }
+ 
++bool GameController::ShouldUseVrMotion(uint64_t last_vr_us, uint64_t now_us, bool* motion_enabled) {
++	Common::LockGuard lock(m_mutex);
++	*motion_enabled = m_motion_enabled;
++	if (!m_motion_enabled) {
++		return false;
++	}
++	if (!m_connected) {
++		return true;
++	}
++	if (m_gyro_emulation) {
++		return false;
++	}
++	if (!m_has_real_gyro) {
++		return true;
++	}
++	const bool vr_recent =
++	    last_vr_us != 0 && now_us >= last_vr_us && (now_us - last_vr_us) < 15'000'000ULL;
++	return vr_recent && last_vr_us > m_last_input_us && last_vr_us > m_last_motion_us;
++}
++
+ void GameController::ResetInputState() {
+ 	Common::LockGuard lock(m_mutex);
+ 	m_state.buttons = 0;
+@@ -906,7 +1033,9 @@ static void StopHostPad(SDL_Gamepad* pad) {
  		(void)SDL_SendGamepadEffect(pad, &effect, sizeof(effect));
  	}
  	(void)SDL_RumbleGamepad(pad, 0, 0, 0);
@@ -15775,7 +15935,7 @@ index ad393f7e..6732019a 100644
  }
  
  // ASTROHYBRID_RUMBLE_SCALE=percent (default 100, 0..200): rumble strength for pads other than a
-@@ -933,92 +1018,130 @@ static uint16_t HostRumble(int id, uint8_t motor) {
+@@ -933,92 +1062,130 @@ static uint16_t HostRumble(int id, uint8_t motor) {
  }
  
  void GameController::SetVibration(uint8_t large_motor, uint8_t small_motor) {
@@ -15944,13 +16104,13 @@ index ad393f7e..6732019a 100644
 +				}
 +			}
 +			return false;
- 		}
++		}
 +		for (int i = 0; i < 2; i++) {
 +			if ((param.trigger_mask & (1u << i)) != 0) {
 +				m_trigger_effect.trigger_mask |= static_cast<uint8_t>(1u << i);
 +				m_trigger_effect.command[i] = param.command[i];
 +			}
-+		}
+ 		}
 +		active_id = m_active_id;
 +	}
 +	if (effect.enable_bits != 0) {
@@ -15958,7 +16118,7 @@ index ad393f7e..6732019a 100644
  	}
  	return true;
  }
-@@ -1044,13 +1167,13 @@ void GameController::GetTriggerEffectState(int32_t* state) {
+@@ -1044,13 +1211,13 @@ void GameController::GetTriggerEffectState(int32_t* state) {
  	}
  }
  
@@ -15975,7 +16135,7 @@ index ad393f7e..6732019a 100644
  	if ((param.trigger_mask & 0x01u) != 0) {
  		effect.enable_bits |= 0x08;
  		if (!trigger_effect_to_dualsense(param.command[0], effect.left_trigger, scale)) {
-@@ -1063,15 +1186,19 @@ bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
+@@ -1063,15 +1230,19 @@ bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
  			return false;
  		}
  	}
@@ -16001,7 +16161,17 @@ index ad393f7e..6732019a 100644
  }
  
  void GameController::GetConnectionInfo(bool* flag, int* count) {
-@@ -1386,6 +1513,13 @@ void ToggleGyroEmulation(int id) {
+@@ -1321,8 +1492,8 @@ void Connect(int id) {
+ 	}
+ 	g_pad_players.emplace_back(id, -1);
+ 	RefreshPlayers();
++	LogPad(id);
+ 	if (PadPreference() >= 0) {
+-		LogPad(id);
+ 		FollowPad(id, true);
+ 	}
+ }
+@@ -1386,6 +1557,13 @@ void ToggleGyroEmulation(int id) {
  	}
  }
  
@@ -16015,7 +16185,7 @@ index ad393f7e..6732019a 100644
  void ResetInputState() {
  	for (const auto& player: g_players) {
  		if (player != nullptr) {
-@@ -1402,7 +1536,14 @@ bool IsPlayerConnected(int player) {
+@@ -1402,7 +1580,14 @@ bool IsPlayerConnected(int player) {
  	if (player < 0 || player >= Config::MAX_PLAYERS || g_players[player] == nullptr) {
  		return false;
  	}
@@ -16031,7 +16201,20 @@ index ad393f7e..6732019a 100644
  }
  
  bool GameController::PadOpenArgsAreValid(int user_id, int type, int index) const {
-@@ -1594,6 +1735,11 @@ int KYTY_SYSV_ABI PadGetControllerInformation(int handle, PadControllerInformati
+@@ -1578,6 +1763,12 @@ int KYTY_SYSV_ABI PadResetOrientation(int handle) {
+ 	}
+ 
+ 	PlayerForHandle(handle)->ResetOrientation();
++	if (handle == PAD_HANDLE && VrGamepad::Enabled()) {
++		const auto        vr_left  = Vr::OpenXrGetController(0);
++		const auto        vr_right = Vr::OpenXrGetController(1);
++		Common::LockGuard lock(g_vr_motion_mutex);
++		g_vr_motion_tracker.ResetHeading(vr_left, vr_right);
++	}
+ 	return OK;
+ }
+ 
+@@ -1594,6 +1785,11 @@ int KYTY_SYSV_ABI PadGetControllerInformation(int handle, PadControllerInformati
  	int  connected_count = 0;
  	bool connected       = false;
  	PlayerForHandle(handle)->GetConnectionInfo(&connected, &connected_count);
@@ -16043,24 +16226,38 @@ index ad393f7e..6732019a 100644
  
  	std::memset(info, 0, sizeof(*info));
  
-@@ -1642,6 +1788,16 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
+@@ -1642,6 +1838,30 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
  
  	pad_fill_data(data, state, connected, connected_count);
  
 +	if (handle == PAD_HANDLE && VrGamepad::Enabled()) {
 +		const auto vr_left  = Vr::OpenXrGetController(0);
 +		const auto vr_right = Vr::OpenXrGetController(1);
-+		const auto now_us   = LibKernel::KernelGetProcessTime();
-+		const auto vr_res   = VrGamepad::MergeIntoPadData(data, vr_left, vr_right, now_us);
-+		if (vr_res.active_input) {
-+			g_last_vr_input_us.store(now_us, std::memory_order_relaxed);
++		if (vr_left.connected || vr_right.connected) {
++			const auto now_us     = LibKernel::KernelGetProcessTime();
++			const auto frame_pose = Vr::OpenXrGetFramePose();
++			bool       motion_on  = true;
++			const bool use_motion = PlayerForHandle(handle)->ShouldUseVrMotion(
++			    g_last_vr_input_us.load(std::memory_order_relaxed), now_us, &motion_on);
++			VrGamepad::MotionSample motion {};
++			{
++				Common::LockGuard lock(g_vr_motion_mutex);
++				motion = g_vr_motion_tracker.Update(vr_left, vr_right, frame_pose.head,
++				                                    frame_pose.recenter_generation, now_us,
++				                                    motion_on);
++			}
++			const auto vr_res = VrGamepad::MergeIntoPadData(
++			    data, vr_left, vr_right, now_us, use_motion && motion.valid ? &motion : nullptr);
++			if (vr_res.active_input) {
++				g_last_vr_input_us.store(now_us, std::memory_order_relaxed);
++			}
 +		}
 +	}
 +
  	return OK;
  }
  
-@@ -1676,12 +1832,27 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
+@@ -1676,12 +1896,79 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
  		pad_fill_data(&data[i], states[i], connected, connected_count);
  	}
  
@@ -16068,11 +16265,24 @@ index ad393f7e..6732019a 100644
 +		const auto vr_left  = Vr::OpenXrGetController(0);
 +		const auto vr_right = Vr::OpenXrGetController(1);
 +		if (vr_left.connected || vr_right.connected) {
-+			const auto now_us = LibKernel::KernelGetProcessTime();
-+			bool       active = false;
++			const auto now_us     = LibKernel::KernelGetProcessTime();
++			const auto frame_pose = Vr::OpenXrGetFramePose();
++			bool       motion_on  = true;
++			const bool use_motion = player->ShouldUseVrMotion(
++			    g_last_vr_input_us.load(std::memory_order_relaxed), now_us, &motion_on);
++			VrGamepad::MotionSample motion {};
++			{
++				Common::LockGuard lock(g_vr_motion_mutex);
++				motion = g_vr_motion_tracker.Update(vr_left, vr_right, frame_pose.head,
++				                                    frame_pose.recenter_generation, now_us,
++				                                    motion_on);
++			}
++			const auto* motion_ptr = use_motion && motion.valid ? &motion : nullptr;
++			bool        active     = false;
 +			for (int i = 0; i < ret_num; i++) {
-+				const auto vr_res = VrGamepad::MergeIntoPadData(&data[i], vr_left, vr_right, now_us);
-+				active            = active || vr_res.active_input;
++				const auto vr_res =
++				    VrGamepad::MergeIntoPadData(&data[i], vr_left, vr_right, now_us, motion_ptr);
++				active = active || vr_res.active_input;
 +			}
 +			if (active) {
 +				g_last_vr_input_us.store(now_us, std::memory_order_relaxed);
@@ -16083,16 +16293,16 @@ index ad393f7e..6732019a 100644
  	return ret_num;
  }
  
- int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
- 	PRINT_NAME();
--	Common::LockGuard lock(g_router_mutex);
- 
- 	if (const auto error = PadCheckHandle(handle); error != OK) {
- 		return error;
-@@ -1696,6 +1867,31 @@ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
- 
- 	PlayerForHandle(handle)->SetVibration(param->large_motor, param->small_motor);
- 
++void PadSetBridgeVibration(int handle, uint8_t game_large, uint8_t game_small, uint8_t audio_large,
++                           uint8_t audio_small) {
++	if (PadCheckHandle(handle) != OK) {
++		return;
++	}
++
++	const uint8_t host_large = std::max(game_large, audio_large);
++	const uint8_t host_small = std::max(game_small, audio_small);
++	PlayerForHandle(handle)->SetVibration(host_large, host_small);
++
 +	if (handle == PAD_HANDLE && VrGamepad::Enabled()) {
 +		const auto vr_left  = Vr::OpenXrGetController(0);
 +		const auto vr_right = Vr::OpenXrGetController(1);
@@ -16106,9 +16316,12 @@ index ad393f7e..6732019a 100644
 +			                     (last_vr != 0 && now_us >= last_vr &&
 +			                      (now_us - last_vr) < 15'000'000ULL);
 +			if (vr_used) {
-+				float left_amp = 0.0f, right_amp = 0.0f;
++				const bool    use_audio = VrGamepad::AudioHapticsEnabled();
++				const uint8_t vr_large  = use_audio ? host_large : game_large;
++				const uint8_t vr_small  = use_audio ? host_small : game_small;
++				float         left_amp = 0.0f, right_amp = 0.0f;
 +				VrGamepad::ComputeHapticAmplitudes(
-+				    param->large_motor, param->small_motor,
++				    vr_large, vr_small,
 +				    PlayerForHandle(handle)->GetSettingScale(Setting::VibrationIntensity),
 +				    left_amp, right_amp);
 +				Vr::OpenXrSetControllerHaptics(left_amp, right_amp);
@@ -16117,11 +16330,24 @@ index ad393f7e..6732019a 100644
 +			}
 +		}
 +	}
++}
 +
+ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
+ 	PRINT_NAME();
+-	Common::LockGuard lock(g_router_mutex);
+ 
+ 	if (const auto error = PadCheckHandle(handle); error != OK) {
+ 		return error;
+@@ -1694,7 +1981,7 @@ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param) {
+ 	     "\t small_motor = %d\n",
+ 	     static_cast<int>(param->large_motor), static_cast<int>(param->small_motor));
+ 
+-	PlayerForHandle(handle)->SetVibration(param->large_motor, param->small_motor);
++	PadSetBridgeVibration(handle, param->large_motor, param->small_motor, 0, 0);
+ 
  	return OK;
  }
- 
-@@ -1711,7 +1907,6 @@ int KYTY_SYSV_ABI PadResetLightBar(int handle) {
+@@ -1711,7 +1998,6 @@ int KYTY_SYSV_ABI PadResetLightBar(int handle) {
  
  int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
  	PRINT_NAME();
@@ -16129,7 +16355,7 @@ index ad393f7e..6732019a 100644
  
  	if (const auto error = PadCheckHandle(handle); error != OK) {
  		return error;
-@@ -1727,7 +1922,6 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
+@@ -1727,7 +2013,6 @@ int KYTY_SYSV_ABI PadSetLightBar(int handle, const PadLightBarParam* param) {
  
  int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const PadTriggerEffectParam* param) {
  	PRINT_NAME();
@@ -16138,7 +16364,7 @@ index ad393f7e..6732019a 100644
  	if (const auto error = PadCheckHandle(handle); error != OK) {
  		return error;
 diff --git a/src/libs/controller.h b/src/libs/controller.h
-index 1dd3379a..46f69704 100644
+index 1dd3379a..2177b96c 100644
 --- a/src/libs/controller.h
 +++ b/src/libs/controller.h
 @@ -84,6 +84,8 @@ void SetRightStick(int id, int x, int y);
@@ -16150,6 +16376,15 @@ index 1dd3379a..46f69704 100644
  void ResetInputState();
  int  GetActiveControllerId();
  // True when the player has a keyboard or gamepad assigned.
+@@ -135,6 +137,8 @@ int KYTY_SYSV_ABI PadIsRemoteController(int handle, bool* is_remote);
+ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data);
+ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num);
+ int KYTY_SYSV_ABI PadSetVibration(int handle, const PadVibrationParam* param);
++void              PadSetBridgeVibration(int handle, uint8_t game_large, uint8_t game_small,
++                                        uint8_t audio_large, uint8_t audio_small);
+ int KYTY_SYSV_ABI PadSetTriggerEffect(int handle, const PadTriggerEffectParam* param);
+ int KYTY_SYSV_ABI PadGetTriggerEffectState(int handle, PadTriggerEffectStateInformation* info);
+ int KYTY_SYSV_ABI PadResetLightBar(int handle);
 diff --git a/src/libs/dualSenseHaptics.cpp b/src/libs/dualSenseHaptics.cpp
 index 21d01299..a2e6a36a 100644
 --- a/src/libs/dualSenseHaptics.cpp
@@ -16195,10 +16430,10 @@ index 21d01299..a2e6a36a 100644
  	const bool wireless = IsWireless(controller);
 diff --git a/src/libs/vrGamepadBridge.h b/src/libs/vrGamepadBridge.h
 new file mode 100644
-index 00000000..b991e2c9
+index 00000000..9ffbfade
 --- /dev/null
 +++ b/src/libs/vrGamepadBridge.h
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,578 @@
 +#ifndef EMULATOR_SRC_LIBS_VRGAMEPADBRIDGE_H_
 +#define EMULATOR_SRC_LIBS_VRGAMEPADBRIDGE_H_
 +
@@ -16266,6 +16501,320 @@ index 00000000..b991e2c9
 +	}
 +}
 +
++inline bool TiltEnabled() {
++	static const bool enabled = [] {
++		if (const char* v = std::getenv("KYTY_VR_TILT"); v != nullptr && v[0] == '0') {
++			return false;
++		}
++		if (const char* v = std::getenv("ASTROHYBRID_VR_TILT"); v != nullptr && v[0] == '0') {
++			return false;
++		}
++		return true;
++	}();
++	return enabled;
++}
++
++inline float TiltScale() {
++	static const float scale = [] {
++		const char* v = std::getenv("ASTROHYBRID_VR_TILT_SCALE");
++		if (v == nullptr || v[0] == '\0') {
++			return 1.0f;
++		}
++		char*       end    = nullptr;
++		const float parsed = std::strtof(v, &end);
++		if (end == v || !std::isfinite(parsed) || parsed <= 0.0f) {
++			return 1.0f;
++		}
++		return std::clamp(parsed, 0.25f, 3.0f);
++	}();
++	return scale;
++}
++
++using Vec3 = std::array<float, 3>;
++using Quat = std::array<float, 4>; // x, y, z, w
++
++inline Quat NormalizeQuat(const Quat& q) {
++	const float len_sq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
++	if (!std::isfinite(len_sq) || len_sq <= 1e-12f) {
++		return {0.0f, 0.0f, 0.0f, 1.0f};
++	}
++	const float inv = 1.0f / std::sqrt(len_sq);
++	return {q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv};
++}
++
++inline Quat QuatConjugate(const Quat& q) {
++	return {-q[0], -q[1], -q[2], q[3]};
++}
++
++inline Quat QuatMultiply(const Quat& a, const Quat& b) {
++	return {a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
++	        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
++	        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
++	        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]};
++}
++
++inline Vec3 QuatRotate(const Quat& q, const Vec3& v) {
++	const Vec3 t {2.0f * (q[1] * v[2] - q[2] * v[1]), 2.0f * (q[2] * v[0] - q[0] * v[2]),
++	              2.0f * (q[0] * v[1] - q[1] * v[0])};
++	return {v[0] + q[3] * t[0] + (q[1] * t[2] - q[2] * t[1]),
++	        v[1] + q[3] * t[1] + (q[2] * t[0] - q[0] * t[2]),
++	        v[2] + q[3] * t[2] + (q[0] * t[1] - q[1] * t[0])};
++}
++
++inline Quat ShortestArcQuat(const Quat& q) {
++	return q[3] < 0.0f ? Quat {-q[0], -q[1], -q[2], -q[3]} : q;
++}
++
++// Extracts pure horizontal yaw around +Y (OpenXR +X right, +Y up, -Z forward).
++inline Quat ExtractYawQuat(const Quat& raw) {
++	const Quat q   = NormalizeQuat(raw);
++	const Vec3 fwd = QuatRotate(q, {0.0f, 0.0f, -1.0f});
++	const float horiz_sq = fwd[0] * fwd[0] + fwd[2] * fwd[2];
++	if (horiz_sq > 1e-4f) {
++		const float yaw = std::atan2(-fwd[0], -fwd[2]);
++		return {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
++	}
++	return NormalizeQuat({0.0f, q[1], 0.0f, q[3]});
++}
++
++inline Quat ScaleRotationQuat(const Quat& raw, float scale) {
++	const Quat q = ShortestArcQuat(NormalizeQuat(raw));
++	if (std::fabs(scale - 1.0f) <= 1e-4f) {
++		return q;
++	}
++	const float v_len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
++	if (v_len <= 1e-6f) {
++		return {0.0f, 0.0f, 0.0f, 1.0f};
++	}
++	const float half_angle = std::atan2(v_len, q[3]);
++	const float clamped    = std::clamp(half_angle * scale, -1.5707963f, 1.5707963f);
++	const float k          = std::sin(clamped) / v_len;
++	return {q[0] * k, q[1] * k, q[2] * k, std::cos(clamped)};
++}
++
++struct MotionSample {
++	bool  valid                = false;
++	bool  rezero_chord_active  = false;
++	float orientation[4]       = {0.0f, 0.0f, 0.0f, 1.0f};
++	float accel[3]             = {0.0f, 1.0f, 0.0f};
++	float gyro[3]              = {0.0f, 0.0f, 0.0f};
++};
++
++// Tracks OpenXR controller 6DoF pose (preferring the right hand) and converts tilt/rotation
++// into PS5 DualSense motion fields (orientation quaternion, gravity accel, body-local gyro).
++// Reference heading follows initial/recentered headset yaw so turning in VR doesn't swap
++// pitch and roll, while Right Grip + R3 re-zeros neutral tilt to the user's current grip pose.
++class MotionTracker {
++public:
++	[[nodiscard]] MotionSample Update(const Vr::VrControllerInput& left,
++	                                  const Vr::VrControllerInput& right,
++	                                  const Vr::VrPose& head,
++	                                  uint64_t          recenter_generation,
++	                                  uint64_t          timestamp_us,
++	                                  bool              motion_enabled = true) {
++		MotionSample sample {};
++		if (!Enabled() || !TiltEnabled() || !motion_enabled) {
++			m_prev_valid       = false;
++			m_prev_rezero_down = false;
++			return sample;
++		}
++
++		const bool l_conn    = left.connected;
++		const bool r_conn    = right.connected;
++		const bool l_squeeze = l_conn && left.squeeze > SQUEEZE_THRESHOLD;
++		const bool r_squeeze = r_conn && right.squeeze > SQUEEZE_THRESHOLD;
++		const bool l_click   = l_conn && left.stick_click;
++		const bool r_click   = r_conn && right.stick_click;
++		const bool l_menu    = l_conn && left.menu;
++
++		const bool touchpad_chord = (l_squeeze && l_menu) || (l_click && r_click);
++		const bool rezero_down    = !touchpad_chord && r_squeeze && r_click;
++		sample.rezero_chord_active = rezero_down;
++
++		const Vr::VrControllerInput* active_ctrl = nullptr;
++		int                          active_hand = -1;
++		if (r_conn && right.pose.valid) {
++			active_ctrl = &right;
++			active_hand = 1;
++		} else if (l_conn && left.pose.valid) {
++			active_ctrl = &left;
++			active_hand = 0;
++		}
++
++		if (active_ctrl == nullptr) {
++			m_prev_valid          = false;
++			m_active_hand         = -1;
++			m_prev_sample_time_ns = 0;
++			m_cached_gyro         = {};
++			m_prev_rezero_down    = rezero_down;
++			return sample;
++		}
++
++		if (active_hand != m_active_hand) {
++			m_active_hand         = active_hand;
++			m_prev_valid          = false;
++			m_prev_sample_time_ns = 0;
++			m_cached_gyro         = {};
++		}
++
++		const Quat q_ctrl = NormalizeQuat(
++		    {active_ctrl->pose.orientation[0], active_ctrl->pose.orientation[1],
++		     active_ctrl->pose.orientation[2], active_ctrl->pose.orientation[3]});
++
++		// Re-align baseline to headset horizontal yaw on first valid head pose or system recenter.
++		if (head.valid && (!m_has_head_ref || recenter_generation != m_last_recenter_gen)) {
++			m_ref_quat          = ExtractYawQuat({head.orientation[0], head.orientation[1],
++			                                      head.orientation[2], head.orientation[3]});
++			m_has_head_ref      = true;
++			m_has_custom_ref    = false;
++			m_last_recenter_gen = recenter_generation;
++			m_prev_valid        = false;
++			m_cached_gyro       = {};
++		} else if (!head.valid) {
++			m_last_recenter_gen = recenter_generation;
++		}
++
++		// Explicit Right Grip + R3 rising edge snaps neutral tilt directly to current wrist pose.
++		if (rezero_down && !m_prev_rezero_down) {
++			m_ref_quat       = q_ctrl;
++			m_has_custom_ref = true;
++			m_prev_valid     = false;
++			m_cached_gyro    = {};
++		}
++		m_prev_rezero_down = rezero_down;
++
++		const float scale = TiltScale();
++		const Quat  q_rel = QuatMultiply(QuatConjugate(m_ref_quat), q_ctrl);
++		const Quat  q_pad = ScaleRotationQuat(q_rel, scale);
++		const Vec3  accel = QuatRotate(QuatConjugate(q_pad), {0.0f, 1.0f, 0.0f});
++
++		// Note: Relay() polls every 4ms while OpenXR updates poses per headset frame (~11-22ms).
++		// Use OpenXR XrSpaceVelocity when reported, and only re-differentiate orientation on fresh
++		// OpenXR sample_time_ns ticks so intermediate 4ms polls hold steady angular velocity
++		// instead of dropping to zero for 75% of polls.
++		constexpr uint64_t max_interval_us = 100000;
++		Vec3               gyro            = m_cached_gyro;
++		if (active_ctrl->angular_vel_valid &&
++		    std::isfinite(active_ctrl->angular_velocity[0]) &&
++		    std::isfinite(active_ctrl->angular_velocity[1]) &&
++		    std::isfinite(active_ctrl->angular_velocity[2])) {
++			const Vec3 local_w = QuatRotate(
++			    QuatConjugate(q_ctrl), {active_ctrl->angular_velocity[0],
++			                            active_ctrl->angular_velocity[1],
++			                            active_ctrl->angular_velocity[2]});
++			gyro                 = {local_w[0] * scale, local_w[1] * scale, local_w[2] * scale};
++			m_cached_gyro        = gyro;
++			m_last_fresh_poll_us = timestamp_us;
++			m_prev_pad_quat      = q_pad;
++			m_prev_time_us       = timestamp_us;
++			m_prev_sample_time_ns = active_ctrl->sample_time_ns;
++			m_prev_valid         = true;
++		} else if (active_ctrl->sample_time_ns != 0) {
++			if (active_ctrl->sample_time_ns != m_prev_sample_time_ns) {
++				gyro = {};
++				if (m_prev_valid && m_prev_sample_time_ns != 0 &&
++				    active_ctrl->sample_time_ns > m_prev_sample_time_ns &&
++				    (active_ctrl->sample_time_ns - m_prev_sample_time_ns) <= 100000000ULL) {
++					const float dt = std::clamp(
++					    static_cast<float>(active_ctrl->sample_time_ns - m_prev_sample_time_ns) *
++					        1e-9f,
++					    0.001f, 0.1f);
++					const Quat delta =
++					    ShortestArcQuat(QuatMultiply(QuatConjugate(m_prev_pad_quat), q_pad));
++					const float v_len = std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] +
++					                              delta[2] * delta[2]);
++					if (v_len > 1e-6f) {
++						const float rate = (2.0f * std::atan2(v_len, delta[3])) / (dt * v_len);
++						gyro             = {delta[0] * rate, delta[1] * rate, delta[2] * rate};
++					}
++				}
++				m_cached_gyro         = gyro;
++				m_last_fresh_poll_us  = timestamp_us;
++				m_prev_pad_quat       = q_pad;
++				m_prev_sample_time_ns = active_ctrl->sample_time_ns;
++				m_prev_time_us        = timestamp_us;
++				m_prev_valid          = true;
++			} else if (m_last_fresh_poll_us != 0 && timestamp_us > m_last_fresh_poll_us &&
++			           (timestamp_us - m_last_fresh_poll_us) > max_interval_us) {
++				gyro          = {};
++				m_cached_gyro = {};
++			}
++		} else {
++			gyro = {};
++			if (m_prev_valid && timestamp_us > m_prev_time_us &&
++			    (timestamp_us - m_prev_time_us) <= max_interval_us) {
++				const float dt = std::clamp(
++				    static_cast<float>(timestamp_us - m_prev_time_us) * 0.000001f, 0.001f, 0.1f);
++				const Quat delta =
++				    ShortestArcQuat(QuatMultiply(QuatConjugate(m_prev_pad_quat), q_pad));
++				const float v_len =
++				    std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
++				if (v_len > 1e-6f) {
++					const float rate = (2.0f * std::atan2(v_len, delta[3])) / (dt * v_len);
++					gyro             = {delta[0] * rate, delta[1] * rate, delta[2] * rate};
++				}
++			}
++			m_cached_gyro   = gyro;
++			m_prev_pad_quat = q_pad;
++			m_prev_time_us  = timestamp_us;
++			m_prev_valid    = true;
++		}
++
++		sample.valid          = true;
++		sample.orientation[0] = q_pad[0];
++		sample.orientation[1] = q_pad[1];
++		sample.orientation[2] = q_pad[2];
++		sample.orientation[3] = q_pad[3];
++		sample.accel[0]       = accel[0];
++		sample.accel[1]       = accel[1];
++		sample.accel[2]       = accel[2];
++		sample.gyro[0]        = gyro[0];
++		sample.gyro[1]        = gyro[1];
++		sample.gyro[2]        = gyro[2];
++		return sample;
++	}
++
++	// Aligns only horizontal heading to the active controller (preserving gravity/custom tilt zero)
++	// when the game calls scePadResetOrientation.
++	void ResetHeading(const Vr::VrControllerInput& left, const Vr::VrControllerInput& right) {
++		const Vr::VrPose* active_pose = nullptr;
++		if (right.connected && right.pose.valid) {
++			active_pose = &right.pose;
++		} else if (left.connected && left.pose.valid) {
++			active_pose = &left.pose;
++		}
++		if (active_pose == nullptr) {
++			return;
++		}
++		const Quat q_ctrl = NormalizeQuat({active_pose->orientation[0], active_pose->orientation[1],
++		                                   active_pose->orientation[2], active_pose->orientation[3]});
++		const Quat cur_yaw = ExtractYawQuat(q_ctrl);
++		if (m_has_custom_ref) {
++			const Quat ref_yaw   = ExtractYawQuat(m_ref_quat);
++			const Quat yaw_delta = QuatMultiply(cur_yaw, QuatConjugate(ref_yaw));
++			m_ref_quat           = NormalizeQuat(QuatMultiply(yaw_delta, m_ref_quat));
++		} else {
++			m_ref_quat = cur_yaw;
++		}
++		m_has_head_ref = true;
++		m_prev_valid   = false;
++	}
++
++private:
++	Quat     m_ref_quat {0.0f, 0.0f, 0.0f, 1.0f};
++	Quat     m_prev_pad_quat {0.0f, 0.0f, 0.0f, 1.0f};
++	Vec3     m_cached_gyro {};
++	uint64_t m_prev_time_us        = 0;
++	uint64_t m_prev_sample_time_ns = 0;
++	uint64_t m_last_fresh_poll_us  = 0;
++	uint64_t m_last_recenter_gen   = 0;
++	int      m_active_hand       = -1;
++	bool     m_has_head_ref      = false;
++	bool     m_has_custom_ref    = false;
++	bool     m_prev_valid        = false;
++	bool     m_prev_rezero_down  = false;
++};
++
 +struct MergeResult {
 +	bool any_connected = false;
 +	bool active_input  = false;
@@ -16274,9 +16823,10 @@ index 00000000..b991e2c9
 +// Merges OpenXR left/right VR controller inputs into a PS5 DualSense PadData struct.
 +// Seamless coexistence: when a physical gamepad is also connected, buttons are ORed,
 +// triggers take the maximum, and sticks pick whichever input has the larger deflection.
-+// When no physical gamepad is connected, VR controllers provide a connected virtual pad.
++// When `motion` is valid, writes VR controller orientation, gravity accel, and angular velocity.
 +inline MergeResult MergeIntoPadData(PadData* data, const Vr::VrControllerInput& left,
-+                                    const Vr::VrControllerInput& right, uint64_t timestamp_us) {
++                                    const Vr::VrControllerInput& right, uint64_t timestamp_us,
++                                    const MotionSample* motion = nullptr) {
 +	MergeResult result {};
 +	if (data == nullptr || (!left.connected && !right.connected)) {
 +		return result;
@@ -16313,6 +16863,8 @@ index 00000000..b991e2c9
 +	const bool dpad_chord =
 +	    !touchpad_chord && l_click &&
 +	    (std::fabs(left.stick_x) > DPAD_THRESHOLD || std::fabs(left.stick_y) > DPAD_THRESHOLD);
++	// 3. Tilt Re-Zero: Hold Right Grip + click R3 (re-zeros VR controller motion tilt).
++	const bool rezero_chord = !touchpad_chord && r_squeeze && r_click;
 +
 +	uint32_t vr_buttons = 0;
 +	if (touchpad_chord) {
@@ -16342,7 +16894,7 @@ index 00000000..b991e2c9
 +	// Left hand face & shoulder buttons
 +	if (l_conn) {
 +		if (left.primary) {
-+			vr_buttons |= PAD_BUTTON_SQUARE; // X -> Square (Punch / Spin)
++			vr_buttons |= PAD_BUTTON_CIRCLE; // X -> Circle (swapped with Right B)
 +		}
 +		if (left.secondary) {
 +			vr_buttons |= PAD_BUTTON_TRIANGLE; // Y -> Triangle
@@ -16364,12 +16916,12 @@ index 00000000..b991e2c9
 +			vr_buttons |= PAD_BUTTON_CROSS; // A -> Cross (Jump / Hover)
 +		}
 +		if (right.secondary) {
-+			vr_buttons |= PAD_BUTTON_CIRCLE; // B -> Circle (Back / Cancel)
++			vr_buttons |= PAD_BUTTON_SQUARE; // B -> Square (Punch / Spin; swapped with Left X)
 +		}
-+		if (r_squeeze) {
++		if (r_squeeze && !rezero_chord) {
 +			vr_buttons |= PAD_BUTTON_R1;
 +		}
-+		if (r_click && !touchpad_chord) {
++		if (r_click && !touchpad_chord && !rezero_chord) {
 +			vr_buttons |= PAD_BUTTON_R3;
 +		}
 +	}
@@ -16398,6 +16950,19 @@ index 00000000..b991e2c9
 +		MergeStick(data->right_stick_x, data->right_stick_y, vr_rx, vr_ry);
 +	}
 +
++	if (motion != nullptr && motion->valid) {
++		data->orientation_x      = motion->orientation[0];
++		data->orientation_y      = motion->orientation[1];
++		data->orientation_z      = motion->orientation[2];
++		data->orientation_w      = motion->orientation[3];
++		data->acceleration_x     = motion->accel[0];
++		data->acceleration_y     = motion->accel[1];
++		data->acceleration_z     = motion->accel[2];
++		data->angular_velocity_x = motion->gyro[0];
++		data->angular_velocity_y = motion->gyro[1];
++		data->angular_velocity_z = motion->gyro[2];
++	}
++
 +	data->buttons |= vr_buttons;
 +	data->connected       = true;
 +	data->connected_count = std::max<uint8_t>(data->connected_count, 1);
@@ -16405,18 +16970,43 @@ index 00000000..b991e2c9
 +		data->timestamp = timestamp_us;
 +	}
 +
-+	result.active_input = vr_buttons != 0 || vr_l2 > 0 || vr_r2 > 0 ||
++	result.active_input = vr_buttons != 0 || vr_l2 > 0 || vr_r2 > 0 || rezero_chord ||
 +	                      vr_lx != 128 || vr_ly != 128 || vr_rx != 128 || vr_ry != 128;
 +	return result;
 +}
 +
++inline bool AudioHapticsEnabled() {
++	static const bool enabled = [] {
++		if (const char* v = std::getenv("KYTY_VR_AUDIO_HAPTICS"); v != nullptr && v[0] == '1') {
++			return true;
++		}
++		return false;
++	}();
++	return enabled;
++}
++
++inline uint8_t HapticMinMotor() {
++	static const uint8_t threshold = [] {
++		const char* v = std::getenv("KYTY_VR_HAPTICS_MIN");
++		if (v == nullptr || v[0] == '\0') {
++			return uint8_t {28};
++		}
++		const long parsed = std::strtol(v, nullptr, 10);
++		return static_cast<uint8_t>(std::clamp(parsed, 0L, 255L));
++	}();
++	return threshold;
++}
++
 +inline void ComputeHapticAmplitudes(uint8_t large_motor, uint8_t small_motor, float intensity_scale,
 +                                    float& out_left, float& out_right) {
-+	const float scale = std::clamp(intensity_scale, 0.0f, 1.0f);
-+	const float large = (static_cast<float>(large_motor) / 255.0f) * scale;
-+	const float small = (static_cast<float>(small_motor) / 255.0f) * scale;
-+	out_left          = std::clamp(std::max(large, small * 0.65f), 0.0f, 1.0f);
-+	out_right         = std::clamp(std::max(small, large * 0.65f), 0.0f, 1.0f);
++	const uint8_t floor = HapticMinMotor();
++	const uint8_t f_large = large_motor >= floor ? large_motor : 0;
++	const uint8_t f_small = small_motor >= floor ? small_motor : 0;
++	const float   scale = std::clamp(intensity_scale, 0.0f, 1.0f);
++	const float   large = (static_cast<float>(f_large) / 255.0f) * scale;
++	const float   small = (static_cast<float>(f_small) / 255.0f) * scale;
++	out_left            = std::clamp(std::max(large, small * 0.65f), 0.0f, 1.0f);
++	out_right           = std::clamp(std::max(small, large * 0.65f), 0.0f, 1.0f);
 +}
 +
 +} // namespace Libs::Controller::VrGamepad
@@ -16971,6 +17561,201 @@ index 00000000..98f9b3a7
 +	second.completed = 2;
 +	if (SelectSource(slots, -1, 2) != 0) return 6;
 +	std::puts("Stereo staging selection passed");
++}
+diff --git a/tests/VrGamepadTests.cpp b/tests/VrGamepadTests.cpp
+new file mode 100644
+index 00000000..1a499e78
+--- /dev/null
++++ b/tests/VrGamepadTests.cpp
+@@ -0,0 +1,189 @@
++#include "libs/vrGamepadBridge.h"
++
++#include <cmath>
++#include <cstdio>
++
++namespace {
++
++constexpr float kEps = 1e-4f;
++
++bool Near(float a, float b, float eps = kEps) {
++	return std::fabs(a - b) <= eps;
++}
++
++Libs::Vr::VrControllerInput MakeController(bool connected,
++                                           Libs::Controller::VrGamepad::Quat q = {0, 0, 0, 1}) {
++	Libs::Vr::VrControllerInput c {};
++	c.connected = connected;
++	c.pose      = {true, {q[0], q[1], q[2], q[3]}, {0.0f, 0.0f, 0.0f}};
++	return c;
++}
++
++Libs::Vr::VrPose MakeHead(float yaw_rad) {
++	return {true, {0.0f, std::sin(yaw_rad * 0.5f), 0.0f, std::cos(yaw_rad * 0.5f)}, {0.0f, 0.0f, 0.0f}};
++}
++
++} // namespace
++
++int main() {
++	using namespace Libs::Controller;
++	using namespace Libs::Controller::VrGamepad;
++	using Libs::Vr::VrControllerInput;
++	using Libs::Vr::VrPose;
++
++	MotionTracker tracker;
++	const auto    left  = MakeController(true);
++	auto          right = MakeController(true);
++
++	// 1. Level pose yields identity orientation and +1G Y gravity.
++	const auto level = tracker.Update(left, right, MakeHead(0.0f), 0, 10000);
++	if (!level.valid || !Near(level.orientation[3], 1.0f) || !Near(level.accel[0], 0.0f) ||
++	    !Near(level.accel[1], 1.0f) || !Near(level.accel[2], 0.0f)) {
++		std::fprintf(stderr, "Level pose test failed\n");
++		return 1;
++	}
++
++	// 2. Bank controller 45 degrees right (-45 deg around +Z):
++	//    matches UpdateEmulatedTilt() where roll > 0 => accel.x < 0 and angular_velocity.z < 0.
++	const float half_45 = 0.7853982f * 0.5f;
++	right = MakeController(true, {0.0f, 0.0f, -std::sin(half_45), std::cos(half_45)});
++	const auto banked = tracker.Update(left, right, MakeHead(0.0f), 0, 60000); // dt = 50ms
++	if (!banked.valid || !(banked.accel[0] < -0.65f) || !Near(banked.accel[1], 0.7071f, 0.02f) ||
++	    !(banked.gyro[2] < -10.0f) || !Near(banked.gyro[0], 0.0f, 0.05f)) {
++		std::fprintf(stderr, "Right bank test failed: accel=(%.3f,%.3f,%.3f) gyro=(%.3f,%.3f,%.3f)\n",
++		             banked.accel[0], banked.accel[1], banked.accel[2],
++		             banked.gyro[0], banked.gyro[1], banked.gyro[2]);
++		return 2;
++	}
++
++	// 3. Pitch controller 30 degrees nose-down (-30 deg around +X):
++	//    accel.z > 0 (+sin(30)) and gyro.x < 0.
++	const float half_30 = (0.5235988f) * 0.5f;
++	right = MakeController(true, {-std::sin(half_30), 0.0f, 0.0f, std::cos(half_30)});
++	const auto pitched = tracker.Update(left, right, MakeHead(0.0f), 0, 110000);
++	if (!pitched.valid || !(pitched.accel[2] > 0.45f) || !Near(pitched.accel[1], 0.8660f, 0.02f)) {
++		std::fprintf(stderr, "Pitch nose-down test failed: accel=(%.3f,%.3f,%.3f)\n",
++		             pitched.accel[0], pitched.accel[1], pitched.accel[2]);
++		return 3;
++	}
++
++	// 4. Right Grip + R3 chord snaps custom neutral to current pitched pose AND suppresses R1/R3.
++	right.squeeze     = 1.0f;
++	right.stick_click = true;
++	const auto rezero = tracker.Update(left, right, MakeHead(0.0f), 0, 130000);
++	if (!rezero.valid || !rezero.rezero_chord_active || !Near(rezero.orientation[3], 1.0f) ||
++	    !Near(rezero.accel[1], 1.0f) || !Near(rezero.gyro[0], 0.0f)) {
++		std::fprintf(stderr, "Rezero chord test failed\n");
++		return 4;
++	}
++	PadData pad {};
++	const auto merge_chord = MergeIntoPadData(&pad, left, right, 130000, &rezero);
++	if (!merge_chord.active_input || (pad.buttons & (PAD_BUTTON_R1 | PAD_BUTTON_R3)) != 0 ||
++	    !Near(pad.orientation_w, 1.0f) || !Near(pad.acceleration_y, 1.0f)) {
++		std::fprintf(stderr, "Chord suppression / PadData merge test failed\n");
++		return 5;
++	}
++
++	// 5. System recenter (new recenter_generation) re-aligns to head yaw (+90 deg):
++	//    looking around later WITHOUT recenter_generation change must NOT steer.
++	const float half_90 = 1.5707963f * 0.5f;
++	right = MakeController(true, {0.0f, std::sin(half_90), 0.0f, std::cos(half_90)});
++	const auto recentered = tracker.Update(left, right, MakeHead(1.5707963f), 1, 200000);
++	if (!recentered.valid || !Near(recentered.orientation[3], 1.0f) ||
++	    !Near(recentered.accel[1], 1.0f)) {
++		std::fprintf(stderr, "Head-yaw recenter test failed\n");
++		return 6;
++	}
++	// Turning head right by 45 deg while keeping hand still must keep pad flat.
++	const auto head_turn = tracker.Update(left, right, MakeHead(0.7853982f), 1, 220000);
++	if (!head_turn.valid || !Near(head_turn.orientation[3], 1.0f) || !Near(head_turn.gyro[1], 0.0f)) {
++		std::fprintf(stderr, "Head look independence test failed\n");
++		return 7;
++	}
++
++	// 6. Left-hand fallback when right controller is disconnected + >100ms gap zeros gyro.
++	VrControllerInput disconn {};
++	const auto        left_only = tracker.Update(left, disconn, MakeHead(0.0f), 1, 500000);
++	if (!left_only.valid || !Near(left_only.gyro[0], 0.0f) || !Near(left_only.gyro[1], 0.0f) ||
++	    !Near(left_only.gyro[2], 0.0f)) {
++		std::fprintf(stderr, "Left fallback / long-dt gyro guard failed\n");
++		return 8;
++	}
++
++	// 7. PadSetMotionSensorState(false) disables VR motion cleanly.
++	const auto disabled = tracker.Update(left, right, MakeHead(0.0f), 1, 520000, false);
++	if (disabled.valid) {
++		std::fprintf(stderr, "Motion disable test failed\n");
++		return 9;
++	}
++
++	// 8. Face button mapping: Quest X (left.primary) -> Circle, Quest B (right.secondary) -> Square.
++	{
++		auto btn_l = MakeController(true);
++		auto btn_r = MakeController(true);
++		btn_l.primary   = true; // X
++		btn_r.secondary = true; // B
++		PadData p {};
++		(void)MergeIntoPadData(&p, btn_l, btn_r, 600000);
++		if ((p.buttons & PAD_BUTTON_CIRCLE) == 0 || (p.buttons & PAD_BUTTON_SQUARE) == 0) {
++			std::fprintf(stderr, "X/B swap button test failed: buttons=0x%08x\n", p.buttons);
++			return 10;
++		}
++		btn_l.primary   = false;
++		btn_r.secondary = false;
++		btn_l.secondary = true; // Y -> Triangle
++		btn_r.primary   = true; // A -> Cross
++		PadData p2 {};
++		(void)MergeIntoPadData(&p2, btn_l, btn_r, 610000);
++		if ((p2.buttons & PAD_BUTTON_TRIANGLE) == 0 || (p2.buttons & PAD_BUTTON_CROSS) == 0 ||
++		    (p2.buttons & (PAD_BUTTON_CIRCLE | PAD_BUTTON_SQUARE)) != 0) {
++			std::fprintf(stderr, "Y/A button test failed: buttons=0x%08x\n", p2.buttons);
++			return 11;
++		}
++	}
++
++	// 9. Haptics noise floor filters weak ambient rumble (< 28) while keeping strong hits.
++	{
++		float hl = -1.0f, hr = -1.0f;
++		ComputeHapticAmplitudes(20, 27, 1.0f, hl, hr);
++		if (hl != 0.0f || hr != 0.0f) {
++			std::fprintf(stderr, "Weak haptic threshold test failed: (%.3f, %.3f)\n", hl, hr);
++			return 12;
++		}
++		ComputeHapticAmplitudes(160, 120, 1.0f, hl, hr);
++		if (!(hl > 0.5f) || !(hr > 0.4f)) {
++			std::fprintf(stderr, "Strong haptic impact test failed: (%.3f, %.3f)\n", hl, hr);
++			return 13;
++		}
++	}
++
++	// 10. Repeated 4ms polls within the same OpenXR sample_time_ns hold non-zero angular velocity,
++	//     and XrSpaceVelocity transforms into body-local controller gyro cleanly.
++	{
++		MotionTracker hold_tracker;
++		auto          hl = MakeController(true);
++		auto          hr = MakeController(true);
++		hr.sample_time_ns = 1'000'000'000ULL;
++		(void)hold_tracker.Update(hl, hr, MakeHead(0.0f), 0, 10000);
++		hr                = MakeController(true, {0.0f, 0.0f, -std::sin(0.2f), std::cos(0.2f)});
++		hr.sample_time_ns = 1'020'000'000ULL; // +20ms OpenXR frame
++		const auto f1     = hold_tracker.Update(hl, hr, MakeHead(0.0f), 0, 30000);
++		const auto poll2  = hold_tracker.Update(hl, hr, MakeHead(0.0f), 0, 34000); // +4ms same pose
++		if (!(f1.gyro[2] < -15.0f) || !Near(poll2.gyro[2], f1.gyro[2])) {
++			std::fprintf(stderr, "4ms gyro hold failed: f1=%.3f poll2=%.3f\n", f1.gyro[2], poll2.gyro[2]);
++			return 14;
++		}
++		hr.angular_vel_valid   = true;
++		hr.angular_velocity[0] = 0.0f;
++		hr.angular_velocity[1] = 0.0f;
++		hr.angular_velocity[2] = -3.5f;
++		const auto vel = hold_tracker.Update(hl, hr, MakeHead(0.0f), 0, 38000);
++		if (!Near(vel.gyro[2], -3.5f, 0.01f)) {
++			std::fprintf(stderr, "XrSpaceVelocity pass-through failed: gyro.z=%.3f\n", vel.gyro[2]);
++			return 15;
++		}
++	}
++
++	std::puts("VR controller motion tilt, X/B swap, haptics threshold, 4ms hold, and fallback tests passed");
++	return 0;
 +}
 diff --git a/tests/VrRecenterTests.cpp b/tests/VrRecenterTests.cpp
 new file mode 100644
