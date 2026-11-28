@@ -1,5 +1,5 @@
 {
-    "version":  "0.1.10",
+    "version":  "0.1.11",
     "base_runtime":  "AstroHybrid 1.2.1",
     "game":  {
                  "title_id":  "PPSA21567",
@@ -989,7 +989,7 @@
                     },
                     {
                         "path":  "Install-VR.ps1",
-                        "sha256":  "0d61b299726747b3f81891a13a0b2b4ce4718d1ee2dd9fb54275bfb5add29e1d"
+                        "sha256":  "01dba7438cb5440fa83132fbf6cf718f7ce32cdc59c33fcdaf96a3bbb03bd2ea"
                     },
                     {
                         "path":  "LICENSE",
@@ -1005,7 +1005,7 @@
                     },
                     {
                         "path":  "README.md",
-                        "sha256":  "3f9107851c0e4590ff27c32325ba7a0bd559fd0e70aca29e1949f42442bc6008"
+                        "sha256":  "c1aa52499c228dec508fb6dcda5aa49a90fef019cfbc7002febab79c8e216f4d"
                     },
                     {
                         "path":  "VR-support/libSceVideoOut.prx",
