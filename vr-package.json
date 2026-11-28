@@ -1,5 +1,5 @@
 {
-    "version":  "0.1.11",
+    "version":  "0.1.12",
     "base_runtime":  "AstroHybrid 1.2.1",
     "game":  {
                  "title_id":  "PPSA21567",
@@ -105,7 +105,7 @@
     "payload":  [
                     {
                         "path":  "AstroHybrid VR Launcher.ps1",
-                        "sha256":  "78293c3500a26c0ff6b1a97b7dde32d647a2c355d602c4f6be5dd3fa12ec9a32"
+                        "sha256":  "afffb03ddf8cbbe0ae5f913c0035b59fb428b57efdb0ba345327660232a5d416"
                     },
                     {
                         "path":  "Build/FrameGeneration/BUILD_PROVENANCE.json",
@@ -821,11 +821,11 @@
                     },
                     {
                         "path":  "Build/HeadsetProjectionPreview/kyty_gpu.dll",
-                        "sha256":  "c423ea45e1dc73b4d071dfd0dae8ff3d30720962f632e844cfe09c9eff59da66"
+                        "sha256":  "ad8561fb045b4fa3f944d73f0cc99e77900a9813a0071978a6814b282427ce9d"
                     },
                     {
                         "path":  "Build/HeadsetProjectionPreview/kyty_gpu.dlss.dll",
-                        "sha256":  "c423ea45e1dc73b4d071dfd0dae8ff3d30720962f632e844cfe09c9eff59da66"
+                        "sha256":  "ad8561fb045b4fa3f944d73f0cc99e77900a9813a0071978a6814b282427ce9d"
                     },
                     {
                         "path":  "Build/RunHybrid/assets/cursors/drawing.png",
@@ -1001,11 +1001,11 @@
                     },
                     {
                         "path":  "Play AstroHybrid VR.bat",
-                        "sha256":  "19dd44d2c280a1ebdb42afcf4e41ec3f51bfec2ffcdefc3904b6aafccdc99302"
+                        "sha256":  "5813246eabecc14d63181836404c19d37b052718409ecc9ea5fb7e6b1cabade1"
                     },
                     {
                         "path":  "README.md",
-                        "sha256":  "c1aa52499c228dec508fb6dcda5aa49a90fef019cfbc7002febab79c8e216f4d"
+                        "sha256":  "d39ff0511df552a699ea876c12002a4ecadc195bce442e077d0ac808e14b14d6"
                     },
                     {
                         "path":  "VR-support/libSceVideoOut.prx",

@@ -17,6 +17,9 @@ if exist "%~dp0Build\RunHybrid\PipelineLists\PPSA21567.kyplst" (
 )
 if not defined KYTY_NATIVE_IMAGE_POOL_MB set "KYTY_NATIVE_IMAGE_POOL_MB=64"
 if not defined KYTY_VRAM_BUDGET_MB set "KYTY_VRAM_BUDGET_MB=23552"
+if not defined KYTY_VRAM_GC_BUDGET set "KYTY_VRAM_GC_BUDGET=1"
+if not defined KYTY_VRAM_PRESSURE_FRAMES set "KYTY_VRAM_PRESSURE_FRAMES=12"
+if not defined KYTY_RAM_SMALL_UPLOAD_RING set "KYTY_RAM_SMALL_UPLOAD_RING=1"
 if not defined KYTY_TILER_SCRATCH_POOL_MB set "KYTY_TILER_SCRATCH_POOL_MB=128"
 if not defined KYTY_GUEST_BACKING_LAZY_COMMIT set "KYTY_GUEST_BACKING_LAZY_COMMIT=1"
 if not defined KYTY_GUEST_BACKING_LAZY_ZERO set "KYTY_GUEST_BACKING_LAZY_ZERO=1"
@@ -35,6 +38,9 @@ rem Both eye binding plans are reset when speculative preparation slots are reus
 if not defined KYTY_DRAW_PREP set "KYTY_DRAW_PREP=parallel"
 rem Upstream 1.2.13: order compute dispatches to avoid GPU stalls.
 if not defined KYTY_DISPATCH_OVERLAP set "KYTY_DISPATCH_OVERLAP=0"
+rem Support upstream exFAT/FAT32 alias dumps (#135) and non-destructive mods/ overlays (#22).
+if not defined APS5_PATH_ALIASES if exist "%~dp0Build\RunHybrid\app0-aliases.txt" set /p APS5_PATH_ALIASES=<"%~dp0Build\RunHybrid\app0-aliases.txt"
+if not defined APS5_PATH_OVERLAYS if exist "%~dp0mods\" set "APS5_PATH_OVERLAYS=/app0=%~dp0mods"
 set "KYTY_STEREO_PREP_BINDINGS=1"
 set "KYTY_STEREO_REGISTER_BORROW=1"
 set "KYTY_STEREO_SHARED_PLAN=1"

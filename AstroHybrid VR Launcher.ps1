@@ -5,8 +5,37 @@ if (!$SettingsFile) { $SettingsFile = Join-Path $root 'vr-launcher-settings.json
 $widths = @(2048, 2560, 3200, 3520, 4512, 5184, 6000)
 $dlssModes = @('Performance','Balanced','Quality','DLAA')
 
+function Get-GpuAdapterVramBytes([string]$adapterName) {
+    $candidates = @()
+    $regPath = 'HKLM:\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+    if (Test-Path -LiteralPath $regPath) {
+        foreach ($key in (Get-ChildItem -LiteralPath $regPath -ErrorAction SilentlyContinue)) {
+            try {
+                $props = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+                $desc = [string]$props.DriverDesc
+                $mem = $props.'HardwareInformation.qwMemorySize'
+                if ($desc -and $mem -is [ValueType] -and [int64]$mem -gt 0) {
+                    $candidates += [pscustomobject]@{ Name = $desc; Bytes = [int64]$mem }
+                }
+            } catch {}
+        }
+    }
+    if ($candidates.Count -eq 0) { return 0L }
+    if ($adapterName -and $adapterName -ne 'Automatic') {
+        $exact = @($candidates | Where-Object { $_.Name -ieq $adapterName -or $_.Name -like "*$adapterName*" -or $adapterName -like "*$($_.Name)*" })
+        if ($exact.Count -gt 0) { return [int64]($exact | Measure-Object -Property Bytes -Maximum).Maximum }
+    }
+    $physical = @($candidates | Where-Object { $_.Name -notmatch 'Virtual Desktop|Parsec|Meta Virtual|LuminonCore|Basic Render' })
+    $pool = if ($physical.Count -gt 0) { $physical } else { $candidates }
+    return [int64]($pool | Measure-Object -Property Bytes -Maximum).Maximum
+}
 function Read-Settings {
-    $settings = [ordered]@{ ResolutionWidth=3520; DlssSuperResolution=$false; DlssMode='Quality'; FrameGeneration=$true; Multiplier=2; FlowQuality='Medium'; FlowResolution=25; Overlay=$false; VerboseLogging=$false; SkipIntro=$false }
+    $vramBytes = Get-GpuAdapterVramBytes 'Automatic'
+    $constrained = ($vramBytes -gt 0 -and $vramBytes -lt 21474836480)
+    $hasRtx = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'RTX' }).Count -gt 0
+    $defaultWidth = if ($constrained) { if ($hasRtx) { 3200 } else { 2560 } } else { 3520 }
+    $defaultDlss = $constrained -and $hasRtx
+    $settings = [ordered]@{ ResolutionWidth=$defaultWidth; DlssSuperResolution=$defaultDlss; DlssMode='Quality'; FrameGeneration=$true; Multiplier=2; FlowQuality='Medium'; FlowResolution=25; Overlay=$false; VerboseLogging=$false; SkipIntro=$false }
     $settings.GpuAdapter='Automatic'
     $settings.TriggerStrength=100
     $settings.TiltStrength=100
@@ -221,10 +250,17 @@ function Start-Game($settings) {
     $environment['ASTROHYBRID_VR_HEADSET_PROJECTION']='1'
     $environment['KYTY_VR_EYE_WIDTH']="$($settings.ResolutionWidth)"
     $environment['KYTY_VR_OUTPUT_PIXELS']='6.5'
-    # Tested cache headroom for the 32 GB GPU; these limits do not change render resolution.
+    $vramBytes = Get-GpuAdapterVramBytes $settings.GpuAdapter
+    $constrainedVram = ($vramBytes -gt 0 -and $vramBytes -lt 21474836480)
+    $budgetCapMb = if ($constrainedVram) {
+        [string][int][Math]::Max(6144, [Math]::Floor(($vramBytes / 1MB) - 1536))
+    } else {
+        '23552'
+    }
     foreach ($entry in @{
-        KYTY_VRAM_BUDGET_MB='23552'; KYTY_NATIVE_IMAGE_POOL_MB='64'; KYTY_TILER_SCRATCH_POOL_MB='128'; KYTY_BUFFER_LRU_SKIP='1'
-        KYTY_GUEST_BACKING_LAZY_COMMIT='1'; KYTY_GUEST_BACKING_LAZY_ZERO='1'
+        KYTY_VRAM_BUDGET_MB=$budgetCapMb; KYTY_VRAM_GC_BUDGET='1'
+        KYTY_NATIVE_IMAGE_POOL_MB='64'; KYTY_TILER_SCRATCH_POOL_MB='128'; KYTY_BUFFER_LRU_SKIP='1'
+        KYTY_RAM_SMALL_UPLOAD_RING='1'; KYTY_GUEST_BACKING_LAZY_COMMIT='1'; KYTY_GUEST_BACKING_LAZY_ZERO='1'
     }.GetEnumerator()) {
         if (!$environment.ContainsKey($entry.Key)) { $environment[$entry.Key]=$entry.Value }
     }
@@ -236,22 +272,38 @@ function Start-Game($settings) {
         $environment['KYTY_GUEST_BACKING_LAZY_ZERO']='1'
         $environment['KYTY_NATIVE_IMAGE_POOL_MB']='64'
         $environment['KYTY_TILER_SCRATCH_POOL_MB']='32'
-        $environment['KYTY_VRAM_IDLE_FRAMES']='90'
+        $environment['KYTY_VRAM_IDLE_FRAMES']='45'
+        $environment['KYTY_VRAM_PRESSURE_FRAMES']='16'
         if ($settings.ResolutionWidth -ge 4512) {
             $environment['KYTY_VRAM_IDLE_FRAMES']='30'
             $environment['KYTY_VRAM_PRESSURE_FRAMES']='8'
             $environment['KYTY_VRAM_GC_BUDGET']='1'
-            $environment['KYTY_VRAM_BUDGET_MB']='21000'
+            if (!$constrainedVram) { $environment['KYTY_VRAM_BUDGET_MB']='21000' }
             $environment['KYTY_RAM_SMALL_UPLOAD_RING']='1'
             $environment['KYTY_STREAM_RING_HOST']='1'
+            $environment['KYTY_TEXTURE_STAGING_REBAR']='0'
             $environment['KYTY_TILER_SCRATCH_POOL_MB']='16'
             $environment['KYTY_NATIVE_IMAGE_POOL_MB']='32'
             if (($settings.ResolutionWidth -eq 6000 -or $settings.FrameGeneration) -and (Use-ConstructionRenderer $settings)) {
-                $environment['KYTY_VRAM_BUDGET_MB']='18000'
+                if (!$constrainedVram) { $environment['KYTY_VRAM_BUDGET_MB']='18000' }
                 $environment['KYTY_VRAM_IDLE_FRAMES']='16'
                 $environment['KYTY_VRAM_PRESSURE_FRAMES']='4'
             }
         }
+    }
+    if ($constrainedVram) {
+        # 16 GB and smaller GPUs need host staging/stream rings and aggressive pressure eviction to avoid PCIe spill.
+        $environment['KYTY_VRAM_GC_BUDGET']='1'
+        $environment['KYTY_VRAM_IDLE_FRAMES']='24'
+        $environment['KYTY_VRAM_PRESSURE_FRAMES']='6'
+        $environment['KYTY_VRAM_PRESSURE_BUFFER_FRAMES']='24'
+        $environment['KYTY_NATIVE_IMAGE_POOL_MB']='16'
+        $environment['KYTY_NATIVE_IMAGE_POOL_IDLE_MS']='1000'
+        $environment['KYTY_TILER_SCRATCH_POOL_MB']='16'
+        $environment['KYTY_TILER_SCRATCH_POOL_IDLE_MS']='1000'
+        $environment['KYTY_RAM_SMALL_UPLOAD_RING']='1'
+        $environment['KYTY_STREAM_RING_HOST']='1'
+        $environment['KYTY_TEXTURE_STAGING_REBAR']='0'
     }
     # Isolate the chosen mode from older globally armed OFXR copies.
     $environment['XRFG_DISABLE_OFXR_BRIDGE']='1'
@@ -264,9 +316,7 @@ function Start-Game($settings) {
         $environment['VK_INSTANCE_LAYERS']='VK_LAYER_OFXRBridge_queue_serialize'
         $environment['OFXR_BRIDGE_PROFILE_DIR']=Join-Path $folder 'Profiles'
         $environment['KYTY_VR_FRAME_GENERATION']='ofxr'
-        # Cache planning headroom for OFXR/compositor allocations on this 32 GB GPU.
-        # This is an eviction target, not a hard allocation or render-resolution limit.
-        if (!$environment['KYTY_VRAM_BUDGET_MB']) { $environment['KYTY_VRAM_BUDGET_MB']='24576' }
+        if (!$environment['KYTY_VRAM_BUDGET_MB']) { $environment['KYTY_VRAM_BUDGET_MB']=$budgetCapMb }
     } else {
         $environment['XR_ENABLE_API_LAYERS']=''
         $environment['VK_INSTANCE_LAYERS']=''
@@ -309,11 +359,21 @@ $hint=New-Object Windows.Forms.Label
 $showResolutionHint={
     $width=[int]($resolution.SelectedItem -replace ' pixels','')
     $issue=Get-ResolutionIssue $width $dlss.Checked $dlssMode.SelectedItem
+    $vramBytes = Get-GpuAdapterVramBytes $settings.GpuAdapter
+    $vramWarning = ($vramBytes -gt 0 -and $vramBytes -lt 21474836480) -and (($width -ge 3520 -and (!$dlss.Checked -or $dlssMode.SelectedItem -eq 'DLAA')) -or $width -ge 4512)
     if ($issue) {
+        $hint.ForeColor=[Drawing.Color]::Firebrick
         $hint.Text=$issue
+    } elseif ($vramWarning) {
+        $vramGiB=[Math]::Round($vramBytes / 1GB, 1)
+        $modeLabel = if ($dlss.Checked -and $dlssMode.SelectedItem -ne 'DLAA') { "with DLSS $($dlssMode.SelectedItem)" } else { 'without DLSS scaling' }
+        $hint.ForeColor=[Drawing.Color]::DarkOrange
+        $hint.Text="$vramGiB GB GPU detected: $width px $modeLabel can exceed VRAM and slow down. Use 2560-3200 px or enable DLSS Quality/Balanced."
     } elseif ($dlss.Checked -and $dlssMode.SelectedItem -ne 'DLAA') {
+        $hint.ForeColor=[Drawing.Color]::DimGray
         $hint.Text="DLSS $($dlssMode.SelectedItem) renders a smaller image and reconstructs it to $width pixels per eye."
     } else {
+        $hint.ForeColor=[Drawing.Color]::DimGray
         $hint.Text="The scene renders at $width pixels per eye. Height follows your headset's proportions."
     }
     if ($play) { $play.Enabled=(!$issue -and !$PreviewOnly) }
